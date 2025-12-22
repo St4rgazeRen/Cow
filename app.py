@@ -155,9 +155,11 @@ def fetch_market_data():
 @st.cache_data(ttl=3600)
 def fetch_aux_history():
     """
-    Fetch metrics with Fallbacks for Stablecoins (DeFiLlama) and Funding Rates (Binance)
-    修復說明: 增加資金費率 (Funding Rate) 的 API 補救機制
+    Fetch metrics with Recursive Pagination for Funding Rates (Long History)
+    修復說明: 使用迴圈分頁抓取 Binance 資金費率，獲取從 2021 年至今的完整數據
     """
+    import time # 引入 time 模組以避免請求過快
+    
     # 初始化
     tvl = pd.DataFrame()
     stable = pd.DataFrame()
@@ -166,8 +168,8 @@ def fetch_aux_history():
     # 1. 嘗試透過 data_manager 載入
     try:
         tvl, stable, funding = data_manager.load_all_historical_data()
-    except Exception as e:
-        print(f"Data Manager Load Error: {e}")
+    except:
+        pass
 
     # --- 🚑 補救 1: 穩定幣市值 (DeFiLlama) ---
     if stable is None or stable.empty:
@@ -188,35 +190,62 @@ def fetch_aux_history():
         except Exception as e:
             print(f"Stablecoin Rescue Error: {e}")
 
-    # --- 🚑 補救 2: 資金費率 (Binance Public API) ---
-    # 這是這次新增的部分
+    # --- 🚑 補救 2: 資金費率 (Binance Loop Fetch) ---
+    # 這是這次的升級版：迴圈抓取長歷史
     if funding is None or funding.empty:
         try:
-            # 抓取最近 1000 筆資金費率 (8小時一次，1000筆約等於 333 天)
-            url = "https://fapi.binance.com/fapi/v1/fundingRate"
-            params = {'symbol': 'BTCUSDT', 'limit': 1000}
-            r = requests.get(url, params=params, timeout=10)
+            all_rates = []
+            # 設定起始時間：2021-01-01
+            start_ts = int(datetime(2021, 1, 1).timestamp() * 1000)
+            end_ts = int(datetime.now().timestamp() * 1000)
             
-            if r.status_code == 200:
-                data = r.json()
-                # Binance API 格式: [{'symbol': 'BTCUSDT', 'fundingTime': 16..., 'fundingRate': '0.0001'}, ...]
-                f_recs = []
-                for item in data:
-                    try:
-                        # Binance 時間戳是毫秒 (unit='ms')
-                        dt = pd.to_datetime(int(item['fundingTime']), unit='ms', utc=True)
-                        # 費率原本是小數 (0.0001)，轉成百分比 (0.01)
-                        rate = float(item['fundingRate']) * 100 
-                        f_recs.append({'date': dt, 'fundingRate': rate})
-                    except: continue
+            # 限制最多抓 20 次 (20 * 1000 * 8hr = 約 18 年，絕對夠用且不會卡死)
+            for _ in range(20):
+                url = "https://fapi.binance.com/fapi/v1/fundingRate"
+                params = {
+                    'symbol': 'BTCUSDT', 
+                    'limit': 1000,
+                    'startTime': start_ts
+                }
+                r = requests.get(url, params=params, timeout=5)
                 
-                if f_recs:
-                    funding = pd.DataFrame(f_recs).set_index('date')
-                    print(f"Funding data recovered: {len(funding)} rows")
-        except Exception as e:
-            print(f"Funding Rate Rescue Error: {e}")
+                if r.status_code == 200:
+                    data = r.json()
+                    if not data: break # 沒資料了就停
+                    
+                    all_rates.extend(data)
+                    
+                    # 取得這批最後一筆的時間，並加 1ms 作為下一批的起點
+                    last_time = data[-1]['fundingTime']
+                    start_ts = last_time + 1
+                    
+                    # 如果已經抓到現在了，就停止
+                    if last_time >= end_ts - 3600000: # 1小時內的誤差
+                        break
+                    
+                    time.sleep(0.1) # 禮貌性暫停，避免被 API Ban
+                else:
+                    break
+            
+            # 整理數據
+            f_recs = []
+            for item in all_rates:
+                try:
+                    dt = pd.to_datetime(int(item['fundingTime']), unit='ms', utc=True)
+                    rate = float(item['fundingRate']) * 100
+                    f_recs.append({'date': dt, 'fundingRate': rate})
+                except: continue
+            
+            if f_recs:
+                funding = pd.DataFrame(f_recs).set_index('date')
+                # 去除重複
+                funding = funding[~funding.index.duplicated(keep='first')]
+                print(f"Funding data recovered: {len(funding)} rows (2021-Now)")
 
-    # 2. 清洗資料 Helper Function (處理時區與格式)
+        except Exception as e:
+            print(f"Funding Rate Loop Error: {e}")
+
+    # 2. 清洗資料 Helper Function
     def clean_df(df, name="data"):
         if df is None or df.empty:
             return pd.DataFrame()
@@ -230,7 +259,7 @@ def fetch_aux_history():
             # B. 移除 NaT
             df = df[df.index.notna()]
             
-            # C. 強制移除時區 (Fix Timezone conflict for Plotly)
+            # C. 強制移除時區
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             
@@ -242,11 +271,7 @@ def fetch_aux_history():
             return pd.DataFrame()
 
     # 3. 執行清洗並回傳
-    tvl_clean = clean_df(tvl, "tvl")
-    stable_clean = clean_df(stable, "stable")
-    funding_clean = clean_df(funding, "funding") # 現在這變數會有資料了
-            
-    return tvl_clean, stable_clean, funding_clean
+    return clean_df(tvl, "tvl"), clean_df(stable, "stable"), clean_df(funding, "funding")
 
 def get_mock_funding_rate():
     """Simulate crypto perpetual funding rate"""
