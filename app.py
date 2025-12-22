@@ -9,6 +9,9 @@ import yfinance as yf
 import math
 import os # Added for file operations
 import random
+import ccxt
+import requests
+
 
 # --- Page Config & Custom CSS ---
 st.set_page_config(
@@ -199,6 +202,70 @@ def calculate_fear_greed_proxy(rsi, close, ma50):
     # Clamp
     score = max(5, min(95, score))
     return score
+
+# --- 1.1 Real-time Data Fetcher (New) ---
+
+@st.cache_data(ttl=60) # Refresh every 60 seconds
+def fetch_realtime_data():
+    """
+    Fetch real-time data from external APIs:
+    1. Binance (Price, Funding Rate) via CCXT
+    2. DeFiLlama (BTC Chain TVL) via Requests
+    3. Alternative.me (Fear & Greed) via Requests
+    """
+    data = {
+        "price": None,
+        "funding_rate": None,
+        "tvl": None,
+        "fng_value": None,
+        "fng_class": None
+    }
+    
+    # 1. Binance via CCXT
+    try:
+        exchange = ccxt.binance()
+        ticker = exchange.fetch_ticker('BTC/USDT')
+        data['price'] = ticker['last']
+        
+        # Funding Rate (fetch_funding_rate is unified in ccxt, but sometimes requires login or specific endpoint)
+        # Often fetch_funding_rate for 'BTC/USDT:USDT' on futures
+        # We try a safer way: fetch_funding_rate if supported, or fallback
+        try:
+             # Binance Futures usually requires specific instantiation or symbol
+             exchange_fut = ccxt.binance({'options': {'defaultType': 'future'}})
+             fr = exchange_fut.fetch_funding_rate('BTC/USDT')
+             data['funding_rate'] = fr['fundingRate'] * 100 # Convert to %
+        except:
+             pass 
+    except Exception as e:
+        print(f"Binance Error: {e}")
+
+    # 2. DeFiLlama (TVL)
+    try:
+        # Get Current BTC Price for TVL calc if needed, or get direct Chain TVL
+        # Endpoint: https://api.llama.fi/v2/chains
+        r = requests.get("https://api.llama.fi/v2/chains", timeout=5)
+        if r.status_code == 200:
+            chains = r.json()
+            for c in chains:
+                if c['name'] == 'Bitcoin':
+                    data['tvl'] = c['tvl'] / 1e9 # Billions
+                    break
+    except Exception as e:
+        print(f"DeFiLlama Error: {e}")
+
+    # 3. Fear & Greed (Alternative.me)
+    try:
+        r = requests.get("https://api.alternative.me/fng/", timeout=5)
+        if r.status_code == 200:
+            res = r.json()
+            item = res['data'][0]
+            data['fng_value'] = int(item['value'])
+            data['fng_class'] = item['value_classification']
+    except Exception as e:
+        print(f"F&G Error: {e}")
+        
+    return data
 
 # --- 2. Technical Analysis Engine ---
 
@@ -702,11 +769,36 @@ with st.spinner("正在連線至戰情室數據庫..."):
     btc = calculate_ahr999(btc)
     
     # Real-time pointers
+    # Real-time pointers
     curr = btc.iloc[-1]
-    prev = btc.iloc[-2]
     
-    # Live/Mock Metrics for UI
-    funding_rate = get_mock_funding_rate()
+    # --- Live Data Integration ---
+    realtime_data = fetch_realtime_data()
+    
+    # Override Close Price if available
+    current_price = realtime_data['price'] if realtime_data['price'] else curr['close']
+    
+    # Metrics Logic
+    funding_rate = realtime_data['funding_rate'] if realtime_data['funding_rate'] is not None else get_mock_funding_rate()
+    tvl_val = realtime_data['tvl'] if realtime_data['tvl'] is not None else get_mock_tvl(current_price)
+    
+    # Fear & Greed
+    if realtime_data['fng_value']:
+        fng_val = realtime_data['fng_value']
+        fng_state = realtime_data['fng_class']
+        # Map to emoji
+        if "Extreme Greed" in fng_state: fng_state = "極度貪婪 🤑"
+        elif "Greed" in fng_state: fng_state = "貪婪 😃"
+        elif "Extreme Fear" in fng_state: fng_state = "極度恐懼 😱"
+        elif "Fear" in fng_state: fng_state = "恐懼 😨"
+        else: fng_state = "中性 😐"
+        fng_source = "Alternative.me"
+    else:
+        # Fallback to proxy
+        fng_val = calculate_fear_greed_proxy(curr['RSI_14'], current_price, curr['SMA_50'])
+        fng_state = "極度貪婪 🤑" if fng_val > 75 else ("貪婪 😃" if fng_val > 55 else ("恐懼 😨" if fng_val < 45 else ("極度恐懼 😱" if fng_val < 25 else "中性 😐")))
+        fng_source = "Antigravity Proxy"
+    
     m2_growth = get_mock_m2_liquidity()
     
 st.title("🦅 比特幣投資戰情室")
@@ -831,11 +923,9 @@ with tab1:
         dow_state = "更高的高點 (HH)" if recent_high > prev_high else "高點降低 (LH)"
         st.metric("道氏理論結構", dow_state, delta=None)
         
-        # 3. Fear & Greed Proxy (New)
-        fg_score = calculate_fear_greed_proxy(curr['RSI_14'], curr['close'], curr['SMA_50'])
-        fg_state = "極度貪婪 🤑" if fg_score > 75 else ("貪婪 😃" if fg_score > 55 else ("恐懼 😨" if fg_score < 45 else ("極度恐懼 😱" if fg_score < 25 else "中性 😐")))
-        fg_color = "normal" if fg_score > 50 else "inverse"
-        st.metric("情緒指數 (Proxy)", f"{fg_score:.0f}/100", fg_state)
+        # 3. Fear & Greed (Unified)
+        fg_color = "normal" if fng_val > 50 else "inverse"
+        st.metric(f"情緒指數 ({fng_source})", f"{fng_val:.0f}/100", fng_state)
 
     # Level 2: Quant (Institutions)
     with col2:
@@ -852,12 +942,12 @@ with tab1:
         st.metric("MVRV Z-Score (Proxy)", f"{mvrv_z:.2f}", mvrv_state)
         
         # 3. TVL (New)
-        tvl_val = get_mock_tvl(curr['close'])
-        st.metric("BTC生態系 TVL (模擬)", f"${tvl_val:.2f}B", "持續增長", delta_color="normal")
+        st.metric("BTC Chain TVL (DeFiLlama)", f"${tvl_val:.2f}B", "持續增長", delta_color="normal")
         
         # 3. Funding Rate
         fr_color = "inverse" if funding_rate > 0.05 else "normal" # Red if overheated
-        st.metric("永續資金費率 (模擬)", f"{funding_rate:.4f}%", "多頭擁擠" if funding_rate > 0.03 else "情緒中性", delta_color=fr_color)
+        fr_label = "Binance 資金費率 (Funding)" if realtime_data['funding_rate'] is not None else "資金費率 (模擬)"
+        st.metric(fr_label, f"{funding_rate:.4f}%", "多頭擁擠" if funding_rate > 0.03 else "情緒中性", delta_color=fr_color)
 
     # Level 3: Macro
     with col3:
@@ -880,6 +970,17 @@ with tab1:
         m2_series = m2_full.reindex(chart_df.index)
         st.line_chart(m2_series, height=120)
         st.caption("全球 M2 流動性趨勢 (模擬)")
+        
+        st.markdown("---")
+        st.markdown("#### 🧠 人工判讀區 (Manual Watch)")
+        
+        m_col1, m_col2 = st.columns(2)
+        with m_col1:
+            st.text_input("🇯🇵 日圓匯率 (JPY)", placeholder="例: 155.5 (關鍵位)", key="macro_jpy")
+            st.metric("量子威脅等級 (Quantum Threat)", "Low (Current)", help="量子電腦破解 RSA 簽名的風險等級，目前極低")
+        with m_col2:
+            st.text_input("🇺🇸 美國 CPI (YoY)", placeholder="例: 3.4% (高於預期)", key="macro_cpi")
+            st.info("**技術敘事監控**:\n- 關注 OP_CAT 升級進度 (比特幣原生擴容關鍵)")
 
 # --- Tab 2: Antigravity v4 Swing Trading ---
 with tab2:
