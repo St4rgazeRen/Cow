@@ -152,36 +152,69 @@ def fetch_market_data():
     
     return btc_final, dxy
 
-@st.cache_data(ttl=3600) # Cache historical external metrics for 1 hour
 @st.cache_data(ttl=3600)
 def fetch_aux_history():
-    """Fetch real historical metrics via Data Manager (Fixed Timezone Issue)"""
-    # 1. Load Raw Data
+    """
+    Fetch real historical metrics with Direct API Fallback for Stablecoins
+    修復說明: 當 data_manager 抓不到穩定幣資料時，直接呼叫 DeFiLlama 歷史 API 補救
+    """
+    # 初始化
+    tvl = pd.DataFrame()
+    stable = pd.DataFrame()
+    funding = pd.DataFrame()
+
+    # 1. 嘗試透過 data_manager 載入 (保留既有邏輯)
     try:
         tvl, stable, funding = data_manager.load_all_historical_data()
-    except:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
-    # 2. Helper function to process each DataFrame explicitly
+    except Exception as e:
+        print(f"Data Manager Load Error: {e}")
+        # 不在這裡 return，讓後面的補救邏輯繼續執行
+
+    # --- 🚑 緊急修復: 如果穩定幣資料是空的，直接去 API 抓 ---
+    if stable is None or stable.empty:
+        try:
+            url = "https://stablecoins.llama.fi/stablecoincharts/all"
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                # 解析 API: [{'date': 160xxxx, 'totalCirculating': {'peggedUSD': 123...}}]
+                recs = []
+                for item in data:
+                    try:
+                        # 轉換時間戳
+                        dt = pd.to_datetime(int(item['date']), unit='s', utc=True)
+                        # 抓取總市值
+                        mc = float(item['totalCirculating']['peggedUSD'])
+                        recs.append({'date': dt, 'mcap': mc})
+                    except:
+                        continue
+                
+                if recs:
+                    stable = pd.DataFrame(recs).set_index('date')
+                    print(f"Stablecoin data recovered: {len(stable)} rows")
+        except Exception as e:
+            print(f"Direct Stablecoin Fetch Error: {e}")
+
+    # 2. 清洗資料 Helper Function
     def clean_df(df, name="data"):
         if df is None or df.empty:
             return pd.DataFrame()
         
         try:
-            # A. Force Index to Datetime (UTC first)
+            # A. 強制轉為 Datetime (處理 index)
             if df.index.dtype == 'object' or df.index.dtype == 'string':
                 df.index = pd.to_datetime(df.index, format='mixed', utc=True)
             else:
                 df.index = pd.to_datetime(df.index, utc=True)
             
-            # B. Drop NaT
+            # B. 移除 NaT
             df = df[df.index.notna()]
             
-            # C. Force Naive (Remove Timezone) - 這是關鍵修復
+            # C. 強制移除時區 (Fix Timezone conflict)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             
-            # D. Sort
+            # D. 排序
             df.sort_index(inplace=True)
             return df
 
@@ -189,9 +222,9 @@ def fetch_aux_history():
             print(f"Error processing {name}: {e}")
             return pd.DataFrame()
 
-    # 3. Apply cleaning and return NEW objects
+    # 3. 執行清洗並回傳
     tvl_clean = clean_df(tvl, "tvl")
-    stable_clean = clean_df(stable, "stable")
+    stable_clean = clean_df(stable, "stable") # 這裡現在會包含剛剛補救回來的資料
     funding_clean = clean_df(funding, "funding")
             
     return tvl_clean, stable_clean, funding_clean
@@ -958,7 +991,7 @@ with tab1:
         shared_xaxes=True, 
         vertical_spacing=0.03,
         row_heights=[0.55, 0.15, 0.15, 0.15],
-        subplot_titles=("BTC Price Action", "BTC Chain TVL (DeFiLlama)", "Funding Rate (Binance)", "Global Stablecoin Market Cap")
+        subplot_titles=("比特幣價格行為 (Price Action)", "BTC 鏈上 TVL (DeFiLlama)", "幣安資金費率 (Funding Rate)", "全球穩定幣市值 (Stablecoin Cap)")
     )
     
     # 1. Price Chart
