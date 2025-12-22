@@ -1170,50 +1170,84 @@ with tab1:
         
         # 1. AHR999
         ahr_val = curr['AHR999']
-        ahr_state = "🟢 抄底區間" if ahr_val < 0.45 else ("🔴 頂部過熱" if ahr_val > 1.2 else "⚪ 定投/持有")
-        st.metric("AHR999 囤幣指標", f"{ahr_val:.2f}", ahr_state)
+        ahr_state = "🟢 抄底區間 (歷史大底)" if ahr_val < 0.45 else ("🟡 合理區間 (持有)" if ahr_val < 1.2 else "🔴 高估區間 (分批止盈)")
+        ahr_help = """
+        **AHR999 囤幣指標**
+        專為比特幣定投設計的長期估值指標。
         
-        # 2. MVRV Z-Score Proxy (Real Calculation)
+        - **< 0.45 (抄底區間)**: 歷史上極為短暫的黃金買點，期望報酬極高。
+        - **0.45 - 1.2 (合理區間)**: 適合持續定投累積籌碼。
+        - **> 1.2 (高估區間)**: 價格偏高，不建議大額單筆買入。
+        """
+        st.metric("AHR999 囤幣指標", f"{ahr_val:.2f}", ahr_state, help=ahr_help)
+        
+        # 2. MVRV Z-Score Proxy
         mvrv_z = curr.get('MVRV_Z_Proxy', 0)
-        mvrv_state = "🔥 過熱頂部" if mvrv_z > 3.0 else ("🟢 價值低估" if mvrv_z < 0 else "中性區域")
-        st.metric("MVRV Z-Score (Proxy)", f"{mvrv_z:.2f}", mvrv_state)
+        mvrv_state = "🔥 過熱頂部 (>3.0)" if mvrv_z > 3.0 else ("🟢 價值低估 (<0)" if mvrv_z < 0 else "中性區域")
+        mvrv_help = """
+        **MVRV Z-Score (近似值)**
+        衡量市場價值 (Market Value) 與已實現價值 (Realized Value) 的偏離度。
         
-        # 3. TVL (New)
-        st.metric("BTC生态系 TVL (DefiLlama)", f"${tvl_val:.2f}B", "持續增長", delta_color="normal")
+        - **負值 (<0)**: 市場價格低於平均持有成本，屬於低估區域。
+        - **正值 (>0)**: 市場獲利盤較多。若超過 3.0 通常代表牛市頂部風險。
+        """
+        st.metric("MVRV Z-Score (Proxy)", f"{mvrv_z:.2f}", mvrv_state, help=mvrv_help)
         
-        # 4. ETF Flows (New)
+        # 3. TVL
+        tvl_help = "**總鎖倉價值 (TVL)**\n比特幣生態系 (包含 Layer2) 的資金鎖定總量。\nTVL 持續增長代表真實應用場景增加，對幣價有長期支撐。"
+        st.metric("BTC 生態系 TVL (DefiLlama)", f"${tvl_val/1e9:.2f}B", "↑ 持續增長" if tvl_val > 0 else "↓ 資金流出", help=tvl_help)
+        
+        # 4. ETF Flows
         etf_flow = proxies['etf_flow']
-        st.metric("現貨 ETF 淨流量 (24h)", f"{etf_flow:+.1f}M", "機構買盤" if etf_flow > 0 else "機構拋壓")
+        etf_help = "**現貨 ETF 淨流量**\n反映傳統金融機構 (如貝萊德、富達) 的資金進出。\n正值代表淨買入，是目前市場最重要的推升動能。"
+        st.metric("現貨 ETF 淨流量 (24h)", f"{etf_flow:+.1f}M", "↑ 機構買盤 (Inflow)" if etf_flow > 0 else "↓ 機構拋壓 (Outflow)", help=etf_help)
         
-        # 3. Funding Rate
-        fr_color = "inverse" if funding_rate > 0.05 else "normal" # Red if overheated
-        fr_label = "Binance 資金費率 (Funding)" if realtime_data['funding_rate'] is not None else "資金費率 (模擬)"
-        st.metric(fr_label, f"{funding_rate:.4f}%", "多頭擁擠" if funding_rate > 0.03 else "情緒中性", delta_color=fr_color)
+        # 5. Funding Rate
+        fr_label = "Binance 資金費率" if realtime_data['funding_rate'] is not None else "資金費率 (模擬)"
+        fr_help = """
+        **永續合約資金費率 (Funding Rate)**
+        平衡期貨與現貨價格的機制。
+        
+        - **> 0.01%**: 多頭付錢給空頭，市場情緒偏多。
+        - **> 0.03% (過熱)**: 多頭情緒過於擁擠，容易引發多殺多回調。
+        - **< 0 (負值)**: 空頭付錢給多頭，市場情緒悲觀，容易引發軋空。
+        """
+        fr_state = "🔥 多頭過熱" if funding_rate > 0.03 else ("🟢 情緒中性" if funding_rate > 0 else "❄️ 空頭主導")
+        fr_color = "inverse" if funding_rate > 0.03 else "normal"
+        st.metric(fr_label, f"{funding_rate:.4f}%", fr_state, delta_color=fr_color, help=fr_help)
 
     # Level 3: Macro
     with col3:
         st.markdown("### Level 3: 宏觀視角")
         
         # 1. DXY Correlation
-        # Calculate correlation
+        dxy_help = """
+        **美元指數 (DXY) 相關性**
+        比特幣通常被視為風險資產，與美元呈現負相關。
+        
+        - **高度負相關 (<-0.5)**: 符合宏觀邏輯 (美元跌、幣漲)。
+        - **脫鉤/正相關 (>0)**: 比特幣走出獨立行情，需注意是否受幣圈原生事件影響。
+        """
         if not dxy.empty:
-            # Align data
             comm_idx = btc.index.intersection(dxy.index)
             corr_90 = btc.loc[comm_idx]['close'].rolling(90).corr(dxy.loc[comm_idx]['close']).iloc[-1]
-            st.metric("BTC vs DXY 相關性 (90d)", f"{corr_90:.2f}", "高度負相關" if corr_90 < -0.5 else "脫鉤/正相關")
+            st.metric("BTC vs DXY 相關性 (90d)", f"{corr_90:.2f}", "高度負相關 (正常)" if corr_90 < -0.5 else "相關性減弱/脫鉤", help=dxy_help)
         else:
             st.metric("BTC vs DXY", "N/A", "數據不足")
             
-        # 2. Stablecoin Market Cap (New)
+        # 2. Stablecoin Market Cap
+        stable_help = """
+        **全球穩定幣市值**
+        代表場外資金的「彈藥庫」存量。
+        市值持續增長 (Trend Up) 代表有外部資金準備進場，是中長期的先行指標。
+        """
         if realtime_data['stablecoin_mcap']:
-            st.metric("全球穩定幣市值 (Stablecoin Cap)", f"${realtime_data['stablecoin_mcap']:.2f}B", "流動性指標")
+            st.metric("全球穩定幣市值 (Stablecoin Cap)", f"${realtime_data['stablecoin_mcap']:.2f}B", "↑ 流動性充沛" if realtime_data['stablecoin_mcap'] > 100 else "流動性一般", help=stable_help)
         else:
             st.metric("全球穩定幣市值", "N/A", "連線失敗")
             
         # 3. Global M2 (Mock)
-        # Calculate on full history to avoid NaN from rolling window
         m2_full = get_mock_global_m2_series(btc)
-        # Slice to match chart_df time range
         m2_series = m2_full.reindex(chart_df.index)
         st.line_chart(m2_series, height=120)
         st.caption("全球 M2 流動性趨勢 (模擬)")
