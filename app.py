@@ -155,53 +155,73 @@ def fetch_market_data():
 @st.cache_data(ttl=3600)
 def fetch_aux_history():
     """
-    Fetch real historical metrics with Direct API Fallback for Stablecoins
-    修復說明: 當 data_manager 抓不到穩定幣資料時，直接呼叫 DeFiLlama 歷史 API 補救
+    Fetch metrics with Fallbacks for Stablecoins (DeFiLlama) and Funding Rates (Binance)
+    修復說明: 增加資金費率 (Funding Rate) 的 API 補救機制
     """
     # 初始化
     tvl = pd.DataFrame()
     stable = pd.DataFrame()
     funding = pd.DataFrame()
 
-    # 1. 嘗試透過 data_manager 載入 (保留既有邏輯)
+    # 1. 嘗試透過 data_manager 載入
     try:
         tvl, stable, funding = data_manager.load_all_historical_data()
     except Exception as e:
         print(f"Data Manager Load Error: {e}")
-        # 不在這裡 return，讓後面的補救邏輯繼續執行
 
-    # --- 🚑 緊急修復: 如果穩定幣資料是空的，直接去 API 抓 ---
+    # --- 🚑 補救 1: 穩定幣市值 (DeFiLlama) ---
     if stable is None or stable.empty:
         try:
             url = "https://stablecoins.llama.fi/stablecoincharts/all"
             r = requests.get(url, timeout=10)
             if r.status_code == 200:
                 data = r.json()
-                # 解析 API: [{'date': 160xxxx, 'totalCirculating': {'peggedUSD': 123...}}]
                 recs = []
                 for item in data:
                     try:
-                        # 轉換時間戳
                         dt = pd.to_datetime(int(item['date']), unit='s', utc=True)
-                        # 抓取總市值
                         mc = float(item['totalCirculating']['peggedUSD'])
                         recs.append({'date': dt, 'mcap': mc})
-                    except:
-                        continue
-                
+                    except: continue
                 if recs:
                     stable = pd.DataFrame(recs).set_index('date')
-                    print(f"Stablecoin data recovered: {len(stable)} rows")
         except Exception as e:
-            print(f"Direct Stablecoin Fetch Error: {e}")
+            print(f"Stablecoin Rescue Error: {e}")
 
-    # 2. 清洗資料 Helper Function
+    # --- 🚑 補救 2: 資金費率 (Binance Public API) ---
+    # 這是這次新增的部分
+    if funding is None or funding.empty:
+        try:
+            # 抓取最近 1000 筆資金費率 (8小時一次，1000筆約等於 333 天)
+            url = "https://fapi.binance.com/fapi/v1/fundingRate"
+            params = {'symbol': 'BTCUSDT', 'limit': 1000}
+            r = requests.get(url, params=params, timeout=10)
+            
+            if r.status_code == 200:
+                data = r.json()
+                # Binance API 格式: [{'symbol': 'BTCUSDT', 'fundingTime': 16..., 'fundingRate': '0.0001'}, ...]
+                f_recs = []
+                for item in data:
+                    try:
+                        # Binance 時間戳是毫秒 (unit='ms')
+                        dt = pd.to_datetime(int(item['fundingTime']), unit='ms', utc=True)
+                        # 費率原本是小數 (0.0001)，轉成百分比 (0.01)
+                        rate = float(item['fundingRate']) * 100 
+                        f_recs.append({'date': dt, 'fundingRate': rate})
+                    except: continue
+                
+                if f_recs:
+                    funding = pd.DataFrame(f_recs).set_index('date')
+                    print(f"Funding data recovered: {len(funding)} rows")
+        except Exception as e:
+            print(f"Funding Rate Rescue Error: {e}")
+
+    # 2. 清洗資料 Helper Function (處理時區與格式)
     def clean_df(df, name="data"):
         if df is None or df.empty:
             return pd.DataFrame()
-        
         try:
-            # A. 強制轉為 Datetime (處理 index)
+            # A. 強制轉為 Datetime
             if df.index.dtype == 'object' or df.index.dtype == 'string':
                 df.index = pd.to_datetime(df.index, format='mixed', utc=True)
             else:
@@ -210,22 +230,21 @@ def fetch_aux_history():
             # B. 移除 NaT
             df = df[df.index.notna()]
             
-            # C. 強制移除時區 (Fix Timezone conflict)
+            # C. 強制移除時區 (Fix Timezone conflict for Plotly)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             
             # D. 排序
             df.sort_index(inplace=True)
             return df
-
         except Exception as e:
             print(f"Error processing {name}: {e}")
             return pd.DataFrame()
 
     # 3. 執行清洗並回傳
     tvl_clean = clean_df(tvl, "tvl")
-    stable_clean = clean_df(stable, "stable") # 這裡現在會包含剛剛補救回來的資料
-    funding_clean = clean_df(funding, "funding")
+    stable_clean = clean_df(stable, "stable")
+    funding_clean = clean_df(funding, "funding") # 現在這變數會有資料了
             
     return tvl_clean, stable_clean, funding_clean
 
