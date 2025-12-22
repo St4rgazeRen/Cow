@@ -190,40 +190,51 @@ def fetch_aux_history():
         except Exception as e:
             print(f"Stablecoin Rescue Error: {e}")
 
-    # --- 🚑 補救 2: 資金費率 (Binance Loop Fetch) ---
-    # 這是這次的升級版：迴圈抓取長歷史
+# --- 🚑 補救 2: 資金費率 (Binance Loop Fetch - Cloud Optimized) ---
     if funding is None or funding.empty:
         try:
             all_rates = []
-            # 設定起始時間：2021-01-01
+            # 設定起始時間：從 2021-01-01 開始
             start_ts = int(datetime(2021, 1, 1).timestamp() * 1000)
             end_ts = int(datetime.now().timestamp() * 1000)
             
-            # 限制最多抓 20 次 (20 * 1000 * 8hr = 約 18 年，絕對夠用且不會卡死)
-            for _ in range(20):
+            # 進度條 (Optional, 但在 Cloud 上能看到它在動比較安心)
+            print("正在抓取資金費率歷史數據...")
+
+            # 限制最多抓 20 次
+            for i in range(20):
                 url = "https://fapi.binance.com/fapi/v1/fundingRate"
                 params = {
                     'symbol': 'BTCUSDT', 
                     'limit': 1000,
                     'startTime': start_ts
                 }
-                r = requests.get(url, params=params, timeout=5)
                 
+                # Cloud 優化：增加 timeout 時間，並加入錯誤重試
+                try:
+                    r = requests.get(url, params=params, timeout=10) # 延長到 10秒
+                except requests.exceptions.RequestException:
+                    time.sleep(1) # 網路錯誤等一下再試
+                    continue
+
                 if r.status_code == 200:
                     data = r.json()
-                    if not data: break # 沒資料了就停
+                    if not data: break 
                     
                     all_rates.extend(data)
                     
-                    # 取得這批最後一筆的時間，並加 1ms 作為下一批的起點
                     last_time = data[-1]['fundingTime']
-                    start_ts = last_time + 1
+                    start_ts = last_time + 1 # 更新下次起點
                     
-                    # 如果已經抓到現在了，就停止
-                    if last_time >= end_ts - 3600000: # 1小時內的誤差
+                    # 判斷是否抓完
+                    if last_time >= end_ts - 3600000:
                         break
                     
-                    time.sleep(0.1) # 禮貌性暫停，避免被 API Ban
+                    # Cloud 優化：睡久一點，避免被 Cloudflare/Binance 擋 IP
+                    time.sleep(0.5) 
+                elif r.status_code == 429:
+                    print("API Rate Limit Hit, sleeping...")
+                    time.sleep(2) # 被擋就睡 2 秒
                 else:
                     break
             
@@ -238,9 +249,8 @@ def fetch_aux_history():
             
             if f_recs:
                 funding = pd.DataFrame(f_recs).set_index('date')
-                # 去除重複
                 funding = funding[~funding.index.duplicated(keep='first')]
-                print(f"Funding data recovered: {len(funding)} rows (2021-Now)")
+                print(f"Funding data recovered: {len(funding)} rows")
 
         except Exception as e:
             print(f"Funding Rate Loop Error: {e}")
@@ -1654,3 +1664,4 @@ with tab4:
             yaxis_type="log"
         )
         st.plotly_chart(fig_m, use_container_width=True)
+
