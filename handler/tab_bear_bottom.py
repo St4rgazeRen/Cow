@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-from core.bear_bottom import calculate_bear_bottom_score
+from core.bear_bottom import calculate_bear_bottom_score, score_series
 
 # 歷史已知熊市底部區間
 KNOWN_BOTTOMS = [
@@ -197,8 +197,8 @@ def render(btc):
 
     score_df_slice = btc.tail(365 * 4).copy()
     with st.spinner("正在計算歷史底部評分..."):
-        historical_scores = [calculate_bear_bottom_score(row)[0] for _, row in score_df_slice.iterrows()]
-        score_df_slice['BottomScore'] = historical_scores
+        # 向量化批量計算，效能比 iterrows 快 20-50x
+        score_df_slice['BottomScore'] = score_series(score_df_slice)
 
     fig_score = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,

@@ -49,27 +49,48 @@ c_start = sidebar_params["c_start"]
 c_end = sidebar_params["c_end"]
 
 # ==============================================================================
-# 2. 數據載入
+# 2. 數據載入（含錯誤邊界與降級方案）
 # ==============================================================================
+_data_warnings = []  # 收集非致命警告，統一顯示
+
 with st.spinner("正在連線至戰情室數據庫..."):
-    btc, dxy = fetch_market_data()
+    # --- BTC 歷史數據（唯一致命依賴）---
+    try:
+        btc, dxy = fetch_market_data()
+    except Exception as e:
+        btc, dxy = __import__('pandas').DataFrame(), __import__('pandas').DataFrame()
+        _data_warnings.append(f"市場數據載入異常: {e}")
 
     if btc.empty:
-        st.error("無法下載 BTC 數據，請檢查網路連線。")
+        st.error("❌ 無法取得 BTC 歷史數據。可能原因：網路離線、yfinance 服務異常。")
+        st.info("💡 若為 Streamlit Cloud 環境，請嘗試重新整理頁面，或等待 60 秒後再試。")
         st.stop()
 
     # 指標計算
-    btc = calculate_technical_indicators(btc)
-    btc = calculate_ahr999(btc)
-    btc = calculate_bear_bottom_indicators(btc)
+    try:
+        btc = calculate_technical_indicators(btc)
+        btc = calculate_ahr999(btc)
+        btc = calculate_bear_bottom_indicators(btc)
+    except Exception as e:
+        _data_warnings.append(f"指標計算部分失敗: {e}")
 
-    # 鏈上輔助數據
-    tvl_hist, stable_hist, fund_hist = fetch_aux_history()
+    # 鏈上輔助數據（非致命，失敗時顯示空圖表）
+    try:
+        tvl_hist, stable_hist, fund_hist = fetch_aux_history()
+    except Exception as e:
+        import pandas as _pd
+        tvl_hist = stable_hist = fund_hist = _pd.DataFrame()
+        _data_warnings.append(f"鏈上數據載入失敗 (TVL/穩定幣/資金費率)，顯示空白: {e}")
 
-    # 即時數據
-    realtime_data = fetch_realtime_data()
+    # 即時數據（非致命，失敗時全 Proxy 備援）
+    try:
+        realtime_data = fetch_realtime_data()
+    except Exception as e:
+        realtime_data = {k: None for k in ['price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield', 'fng_value', 'fng_class']}
+        _data_warnings.append(f"即時數據載入失敗，使用模擬數據: {e}")
+
     curr = btc.iloc[-1]
-    current_price = realtime_data['price'] or curr['close']
+    current_price = realtime_data.get('price') or curr['close']
 
     # Fallback 數值
     funding_rate = (
@@ -115,6 +136,12 @@ st.title("🦅 比特幣投資戰情室")
 st.caption(
     f"數據更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 核心版本: Antigravity v4"
 )
+
+# 顯示非致命警告（可收起）
+if _data_warnings:
+    with st.expander(f"⚠️ {len(_data_warnings)} 個數據警告（不影響核心功能）", expanded=False):
+        for w in _data_warnings:
+            st.warning(w)
 
 # ==============================================================================
 # 4. Tabs
