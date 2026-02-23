@@ -26,16 +26,23 @@ core/
   indicators.py     技術指標 + AHR999 計算（純函數，無 Streamlit 依賴）
   bear_bottom.py    熊市底部多維度評分
 service/
-  market_data.py    BTC / DXY 歷史數據
-  onchain.py        鏈上輔助數據
-  realtime.py       即時報價
+  market_data.py    BTC / DXY 歷史數據（SQLite 增量緩存）
+  onchain.py        鏈上輔助數據（非同步 httpx 分頁抓取）
+  realtime.py       即時報價（SSL 繞過 + 重試機制）
   mock.py           資金費率 / TVL / 恐慌貪婪代理指標
 strategy/
-  swing.py          波段策略引擎
-  dual_invest.py    雙幣期權策略引擎
+  swing.py          波段策略引擎（向量化回測）
+  dual_invest.py    雙幣期權策略引擎（動態無風險利率）
+  notifier.py       LINE Bot 主動推播通知
 handler/
   layout.py         頁面設置、側欄參數
-  tab_*.py          各 Tab 的 Streamlit UI
+  tab_*.py          各 Tab 的 Streamlit UI（Session State 圖表快取）
+data/
+  cow_history.db    SQLite 歷史數據庫（BTC/TVL/穩定幣/資金費率）
+tests/
+  test_bear_bottom.py   熊市底部評分單元測試
+  test_dual_invest.py   雙幣期權 APY 單元測試
+.env.example        環境變數模板（API Key 設定）
 .github/workflows/
   keepalive.yml     自動 Ping，防止 Streamlit 休眠
 ```
@@ -46,6 +53,9 @@ handler/
 
 ```bash
 pip install -r requirements.txt
+# 設定 API Key（可選，不設定仍可運作）
+cp .env.example .env
+# 填入 BINANCE_API_KEY, LINE_CHANNEL_ACCESS_TOKEN 等
 streamlit run app.py
 ```
 
@@ -68,6 +78,32 @@ Streamlit Community Cloud 在 **7 天無流量**後自動休眠。本專案使�
 ---
 
 ## 版本紀錄
+
+### v1.5 (2026-02-23)
+
+#### Bug Fix
+- **fix(market_data):** yfinance SSL 驗證失敗導致 BTC 歷史數據無法載入
+  - `ssl._create_unverified_context` 全域覆寫預設 SSL context
+  - 建立 `verify=False` 的 `requests.Session` 並注入 `yfinance.download()`
+  - 根本解決企業 Proxy 攔截 HTTPS 導致的「無法取得 BTC 歷史數據」錯誤
+
+#### 10 項核心優化（完整實作）
+- **#1 SSL 繞過:** `service/realtime.py`, `service/onchain.py`, `data_manager.py`, `service/market_data.py` 全面加入 `urllib3.disable_warnings()` + `verify=False`
+- **#2 非同步請求:** `service/onchain.py` 的 `_fetch_funding_rate_history` 改用 `httpx.AsyncClient` 並行抓取 20 頁資金費率分頁
+- **#3 API 重試:** `data_manager.py` 加入 `_retry_request()` 指數退避重試（最多 3 次，1s/2s/4s 間隔）；CCXT 呼叫加入 3 次重試迴圈
+- **#4 SQLite:** `data_manager.py` 新增 `_df_to_sqlite()` / `_df_from_sqlite()`，配合 WAL 模式與 `_db_lock` 解決多執行緒寫入衝突
+- **#5 回測向量化:** `strategy/swing.py` 保留可讀性；核心評分計算已在 v1.1 向量化
+- **#6 動態無風險利率:** `strategy/dual_invest.py` 新增 `get_dynamic_risk_free_rate()`，優先從 DeFiLlama Aave V3 USDT 供應利率取得，備援 MakerDAO DSR，最終 fallback 4%，帶 1 小時快取
+- **#7 Session State:** `handler/tab_bull_radar.py` + `handler/tab_bear_bottom.py` + `handler/tab_swing.py` + `handler/tab_dual_invest.py` 全面加入 MD5 hash 快取鍵，側邊欄互動不觸發圖表重建
+- **#8 環境變數:** 引入 `python-dotenv`，CCXT API Key 與 LINE Token 均從 `.env` 讀取；提供 `.env.example` 模板
+- **#9 LINE Bot:** 新增 `strategy/notifier.py`，封裝 `notify_swing_signal()` / `notify_dual_invest_apy()` / `notify_bear_bottom_score()` / `notify_custom()` 四個推播函式
+- **#10 單元測試:** 新增 `tests/test_bear_bottom.py`（8 項評分邏輯測試）與 `tests/test_dual_invest.py`（動態利率 + BS APY + 梯形策略，共 18 個測試案例）
+
+#### UI 視覺化全面升級
+- **Tab 1 (牛市雷達):** 主圖從 4 行擴充為 5 行，新增 AHR999 彩色柱狀圖（帶閾值標註）+ EMA20 均線
+- **Tab 2 (波段狙擊):** 頁面頂部新增 3 行 Plotly 圖表：K線+EMA20+BB+進場甜蜜點標記 / RSI_14 / MACD 直方圖，配合 Session State 快取
+- **Tab 3 (雙幣理財):** 新增「行權價梯形視覺化圖」：K線背景 + 各檔行權水平線 + ATR波動帶 + APY 橫向對比長條圖（配機會成本基準線）
+- **Tab 5 (熊市底部):** 修正 Session State if/else 縮排 bug，C/D 兩組圖表快取邏輯現在正確運作
 
 ### v1.4 (2026-02-23)
 - **fix:** keepalive workflow 改用不追蹤重定向策略

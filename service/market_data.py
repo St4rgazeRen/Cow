@@ -3,16 +3,33 @@ service/market_data.py
 市場數據服務 — BTC 歷史 OHLCV + DXY
 增量更新：本地緩存，只下載缺失日期
 
+[Task #1] SSL 繞過：
+- 企業 Proxy 攔截 HTTPS 導致 yfinance SSL 驗證失敗
+- ssl._create_unverified_context 全域覆寫預設 SSL 設定
+- verify=False 的 requests.Session 注入 yfinance 使用
 [Task #4] SQLite 取代 CSV：
-- 原本使用 BTC_HISTORY.csv，多執行緒下存在寫入損毀風險
-- 改用 data_manager 提供的 SQLite 工具函式統一管理
-- yfinance 下載後透過 _df_to_sqlite() 原子寫入
+- 改用 data_manager 的 SQLite 工具函式，解決多執行緒寫入衝突
 """
 import os
+import ssl
+import requests
+import urllib3
 import pandas as pd
 import yfinance as yf
 import streamlit as st
 from datetime import datetime, timedelta
+
+# [Task #1] 全域關閉 SSL 憑證驗證（企業網路 Proxy 攔截 HTTPS 時必要）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass  # 部分 Python 環境不支援，忽略
+
+# [Task #1] 建立 verify=False 的 requests Session，用於 yfinance 下載
+# yfinance 0.2.x 的 download()/Ticker.history() 均支援 session 參數
+_yf_session = requests.Session()
+_yf_session.verify = False
 
 # [Task #4] 匯入 data_manager 提供的 SQLite 讀寫工具
 import data_manager
@@ -63,7 +80,11 @@ def fetch_market_data():
         # 增量：只下載最後一筆之後的日期
         start_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
         try:
-            btc_new = yf.download("BTC-USD", start=start_date, interval="1d", progress=False)
+            # [Task #1] session=_yf_session 繞過 SSL 驗證
+            btc_new = yf.download(
+                "BTC-USD", start=start_date, interval="1d",
+                progress=False, session=_yf_session
+            )
             if not btc_new.empty:
                 btc_new = _normalize_yf_columns(btc_new)
         except Exception as e:
@@ -72,7 +93,11 @@ def fetch_market_data():
     elif not last_date:
         # 首次下載：從 2017-01-01 開始
         try:
-            btc_new = yf.download("BTC-USD", start="2017-01-01", interval="1d", progress=False)
+            # [Task #1] session=_yf_session 繞過 SSL 驗證
+            btc_new = yf.download(
+                "BTC-USD", start="2017-01-01", interval="1d",
+                progress=False, session=_yf_session
+            )
             if not btc_new.empty:
                 btc_new = _normalize_yf_columns(btc_new)
         except Exception as e:
@@ -95,7 +120,11 @@ def fetch_market_data():
 
     # --- 4. DXY（每次重新下載，資料量小不需緩存） ---
     try:
-        dxy = yf.download("DX-Y.NYB", start="2017-01-01", interval="1d", progress=False)
+        # [Task #1] session=_yf_session 繞過 SSL 驗證
+        dxy = yf.download(
+            "DX-Y.NYB", start="2017-01-01", interval="1d",
+            progress=False, session=_yf_session
+        )
         if not dxy.empty:
             dxy = _normalize_yf_columns(dxy)
             if dxy.index.tz is not None:
