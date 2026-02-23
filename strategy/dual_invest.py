@@ -5,19 +5,154 @@ strategy/dual_invest.py
 - 梯形行權價建議
 - 每日滾倉回測
 純 Python，無 Streamlit 依賴
+
+[Task #6] 動態無風險利率:
+原始: r = 0.04  (寫死 4%，與市場脫節)
+新版: 優先從 DeFiLlama Aave USDT 供應利率取得，
+      網路失敗時 fallback 到 MakerDAO DSR，
+      最終 fallback 到固定 4%。
+利率每次呼叫 calculate_bs_apy() 都是動態獲取（帶本地快取避免重複請求）。
 """
 import math
+import time
 import numpy as np
 import pandas as pd
+import requests
+import urllib3          # [Task #1] SSL 警告靜默（與其他模組一致）
 from datetime import timedelta
+
+# [Task #1] 靜默 SSL 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# [Task #6] 動態無風險利率快取
+# 使用模組等級變數做簡單 TTL 快取（避免每次 BS 計算都發 HTTP 請求）
+# TTL = 3600 秒（1 小時）
+# ──────────────────────────────────────────────────────────────────────────────
+_risk_free_rate_cache  = {"rate": None, "ts": 0.0}  # {rate: float, ts: unix timestamp}
+_RISK_FREE_CACHE_TTL   = 3600  # 快取有效期（秒）
+_RISK_FREE_FALLBACK    = 0.04  # 最終 fallback: 4%
+
+
+def _fetch_aave_usdt_rate() -> float | None:
+    """
+    從 DeFiLlama 抓取 Aave V3 (Ethereum) 的 USDT 供應利率（APY）作為無風險利率基準。
+
+    DeFiLlama pools endpoint 回傳所有 DeFi 協議的 pool 數據，
+    我們篩選 Aave V3 (Ethereum) 的 USDT 供應池，取 apyBase（基礎利率，不含獎勵）。
+
+    [Task #1] verify=False 繞過企業 SSL
+    """
+    try:
+        resp = requests.get(
+            "https://yields.llama.fi/pools",
+            timeout=8,
+            verify=False  # [Task #1]
+        )
+        if resp.status_code != 200:
+            return None
+
+        pools = resp.json().get('data', [])
+        for pool in pools:
+            # 篩選條件：Aave V3、Ethereum 主網、USDT 供應池
+            if (pool.get('project') == 'aave-v3'
+                    and pool.get('chain') == 'Ethereum'
+                    and pool.get('symbol') == 'USDT'):
+                apy_base = pool.get('apyBase')  # 年化基礎利率（百分比）
+                if apy_base is not None and apy_base > 0:
+                    # DeFiLlama 的 apyBase 以百分比表示（如 5.2 代表 5.2%）
+                    # Black-Scholes 需要小數形式（0.052）
+                    rate = float(apy_base) / 100.0
+                    print(f"[DynRate] Aave V3 USDT APY: {apy_base:.2f}%")
+                    return rate
+    except Exception as e:
+        print(f"[DynRate] Aave 利率抓取失敗: {e}")
+    return None
+
+
+def _fetch_makerdao_dsr() -> float | None:
+    """
+    備援：從 DeFiLlama 抓取 MakerDAO DSR (DAI Savings Rate) 作為無風險利率。
+    MakerDAO DSR 是 DeFi 世界公認的基準無風險利率之一。
+
+    [Task #1] verify=False 繞過企業 SSL
+    """
+    try:
+        resp = requests.get(
+            "https://yields.llama.fi/pools",
+            timeout=8,
+            verify=False  # [Task #1]
+        )
+        if resp.status_code != 200:
+            return None
+
+        pools = resp.json().get('data', [])
+        for pool in pools:
+            # MakerDAO DSR 池
+            if (pool.get('project') == 'makerdao'
+                    and pool.get('symbol') in ('DAI', 'sDAI')
+                    and pool.get('chain') == 'Ethereum'):
+                apy_base = pool.get('apyBase')
+                if apy_base is not None and apy_base > 0:
+                    rate = float(apy_base) / 100.0
+                    print(f"[DynRate] MakerDAO DSR: {apy_base:.2f}%")
+                    return rate
+    except Exception as e:
+        print(f"[DynRate] MakerDAO DSR 抓取失敗: {e}")
+    return None
+
+
+def get_dynamic_risk_free_rate() -> float:
+    """
+    動態獲取無風險利率（帶 1 小時本地快取）。
+
+    取得順序:
+    1. 本地快取（TTL 1 小時內直接返回）
+    2. DeFiLlama Aave V3 USDT 供應利率（首選）
+    3. DeFiLlama MakerDAO DSR（備援）
+    4. 固定 4%（最終 fallback）
+
+    返回: float，年化利率（小數，如 0.052 = 5.2%）
+    """
+    global _risk_free_rate_cache
+
+    now = time.time()
+
+    # 快取命中：距上次更新不超過 TTL
+    if (_risk_free_rate_cache["rate"] is not None
+            and now - _risk_free_rate_cache["ts"] < _RISK_FREE_CACHE_TTL):
+        return _risk_free_rate_cache["rate"]
+
+    # 嘗試依序抓取
+    rate = _fetch_aave_usdt_rate() or _fetch_makerdao_dsr()
+
+    # 驗證合理性：DeFi 利率通常在 0.5% ~ 20% 之間，超出範圍視為異常數據
+    if rate is not None and 0.005 <= rate <= 0.20:
+        _risk_free_rate_cache = {"rate": rate, "ts": now}
+        return rate
+
+    # Fallback：使用固定利率，但也更新快取避免頻繁重試
+    print(f"[DynRate] 使用 fallback 利率: {_RISK_FREE_FALLBACK*100:.1f}%")
+    _risk_free_rate_cache = {"rate": _RISK_FREE_FALLBACK, "ts": now}
+    return _RISK_FREE_FALLBACK
 
 
 def calculate_bs_apy(S, K, T_days, sigma_annual, option_type='call'):
-    """Black-Scholes 期權定價 → 年化 APY"""
+    """
+    Black-Scholes 期權定價 → 年化 APY
+
+    [Task #6] 無風險利率 r 改為動態獲取（取代寫死的 0.04）:
+    - 優先使用 Aave V3 USDT 供應利率（DeFiLlama API）
+    - 備援使用 MakerDAO DSR
+    - 最終 fallback: 4%
+    - 利率帶 1 小時本地快取，不影響 APY 計算效能
+    """
     if T_days <= 0:
         return 0.0
     T = T_days / 365.0
-    r = 0.04  # 無風險利率 4%
+
+    # [Task #6] 動態獲取無風險利率（帶快取，通常不會發出 HTTP 請求）
+    r = get_dynamic_risk_free_rate()
 
     def norm_cdf(x):
         return 0.5 * (1 + math.erf(x / math.sqrt(2)))
