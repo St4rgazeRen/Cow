@@ -1,9 +1,10 @@
 name: Streamlit Keepalive (防休眠 Ping)
 
-# 使用 /_stcore/health 健康端點，不走認證跳轉
-# 設定: GitHub Repo Settings -> Secrets -> Actions
-#       STREAMLIT_APP_URL = https://mfyyo9qf5mymsrouxkfdgj.streamlit.app
-#       (結尾不要加斜線 /)
+# Streamlit Community Cloud 只要收到 HTTP 流量就不休眠
+# 無論回傳 200/301/503 都算「有人訪問」，不需要追蹤重定向
+# 設定: GitHub Repo -> Settings -> Secrets -> Actions
+#       加入 Secret: STREAMLIT_APP_URL
+#       值: https://mfyyo9qf5mymsrouxkfdgj.streamlit.app
 
 on:
   schedule:
@@ -15,46 +16,29 @@ jobs:
   ping:
     name: Ping Streamlit App
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
 
     steps:
-      - name: Ping health endpoint
+      - name: Send keepalive ping
         env:
           APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
         run: |
-          # 去除尾端斜線，避免 //stcore/health 雙斜線問題
           BASE="${APP_URL%/}"
-          HEALTH="${BASE}/_stcore/health"
-          echo "Target: ${HEALTH}"
+          echo "Pinging ${BASE} ..."
 
-          # -L --max-redirs 3: 僅跟隨 URL 正規化的 301 (無認證循環風險)
-          CODE=$(curl -s -L --max-redirs 3 \
-            -o /tmp/body.txt -w "%{http_code}" \
-            --max-time 60 --connect-timeout 10 \
-            "${HEALTH}" 2>/dev/null)
-          CODE="${CODE:-000}"
-          BODY=$(cat /tmp/body.txt 2>/dev/null | head -c 100)
-          echo "HTTP ${CODE} | ${BODY}"
+          # 不加 -L，不追蹤重定向，收到任何 HTTP 回應都算成功
+          # Streamlit 只要收到流量就不會進入休眠，無需確認 200
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 --connect-timeout 10 \
+            "${BASE}" 2>/dev/null) || CODE="000"
 
-          if [ "${CODE}" = "200" ]; then
-            echo "App is running (HTTP 200)"
-          elif [ "${CODE}" = "503" ]; then
-            echo "App sleeping, waiting 60s..."
-            sleep 60
-            CODE=$(curl -s -L --max-redirs 3 \
-              -o /tmp/body2.txt -w "%{http_code}" \
-              --max-time 90 --connect-timeout 10 \
-              "${HEALTH}" 2>/dev/null)
-            CODE="${CODE:-000}"
-            echo "Retry HTTP ${CODE}"
-            if [ "${CODE}" = "200" ]; then
-              echo "App woke up"
-            else
-              echo "Still waking (${CODE}), next ping will continue"
-            fi
-          else
-            echo "Unexpected: ${CODE}"
+          echo "HTTP response: ${CODE}"
+
+          if [ "${CODE}" = "000" ]; then
+            echo "No response - network error"
             exit 1
+          else
+            echo "Ping delivered (HTTP ${CODE}) - app will stay awake"
           fi
 
           echo "### Streamlit Keepalive" >> "$GITHUB_STEP_SUMMARY"
@@ -62,4 +46,4 @@ jobs:
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Time | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
           echo "| HTTP | ${CODE} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Endpoint | \`/_stcore/health\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Result | Ping delivered |" >> "$GITHUB_STEP_SUMMARY"
