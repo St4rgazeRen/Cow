@@ -67,14 +67,15 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
             chart_df.index = chart_df.index.tz_localize(None)
 
         fig_t1 = make_subplots(
-            rows=4, cols=1,
+            rows=5, cols=1,
             shared_xaxes=True,
-            vertical_spacing=0.03,
-            row_heights=[0.55, 0.15, 0.15, 0.15],
+            vertical_spacing=0.025,
+            row_heights=[0.40, 0.15, 0.15, 0.15, 0.15],
             subplot_titles=(
                 "比特幣價格行為 (Price Action)",
+                "AHR999 囤幣指標 (< 0.45 = 歷史抄底區)",
+                "幣安資金費率 (Funding Rate) & RSI_14",
                 "BTC 鏈上 TVL (DeFiLlama)",
-                "幣安資金費率 (Funding Rate)",
                 "全球穩定幣市值 (Stablecoin Cap)",
             ),
         )
@@ -92,8 +93,52 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
             x=chart_df.index, y=chart_df['SMA_50'],
             line=dict(color='cyan', width=1, dash='dash'), name='SMA 50',
         ), row=1, col=1)
+        if 'EMA_20' in chart_df.columns:
+            fig_t1.add_trace(go.Scatter(
+                x=chart_df.index, y=chart_df['EMA_20'],
+                line=dict(color='#ffeb3b', width=1, dash='dot'), name='EMA 20',
+            ), row=1, col=1)
 
-        # Row 2: TVL
+        # Row 2: AHR999 指標（附帶閾值線）
+        if 'AHR999' in chart_df.columns and chart_df['AHR999'].notna().any():
+            ahr_colors = [
+                '#00ff88' if v < 0.45
+                else ('#ffcc00' if v < 0.8
+                else ('#ff8800' if v < 1.2
+                else '#ff4b4b'))
+                for v in chart_df['AHR999'].fillna(1.0)
+            ]
+            fig_t1.add_trace(go.Bar(
+                x=chart_df.index, y=chart_df['AHR999'],
+                marker_color=ahr_colors, name='AHR999', showlegend=False,
+            ), row=2, col=1)
+            for lvl, col, lbl in [
+                (0.45, '#00ff88', '抄底 0.45'),
+                (0.8,  '#ffcc00', '偏低 0.8'),
+                (1.2,  '#ff4b4b', '高估 1.2'),
+            ]:
+                fig_t1.add_hline(y=lvl, line_color=col, line_width=1, line_dash='dash',
+                                 annotation_text=lbl, row=2, col=1)
+
+        # Row 3: 資金費率 + RSI 疊加（雙 y 軸概念，以顏色區分）
+        if not fund_hist.empty:
+            fund_sub   = fund_hist.reindex(chart_df.index, method='nearest')
+            fr_colors  = ['#00ff88' if v > 0 else '#ff4b4b' for v in fund_sub['fundingRate']]
+            fig_t1.add_trace(go.Bar(
+                x=fund_sub.index, y=fund_sub['fundingRate'],
+                marker_color=fr_colors, name='Funding Rate %',
+            ), row=3, col=1)
+        if 'RSI_14' in chart_df.columns and chart_df['RSI_14'].notna().any():
+            # RSI 縮放到 [-0.05, 0.05] 左右，與資金費率共軸顯示
+            rsi_scaled = (chart_df['RSI_14'] - 50) * 0.001
+            fig_t1.add_trace(go.Scatter(
+                x=chart_df.index, y=rsi_scaled,
+                line=dict(color='#a32eff', width=1.5), name='RSI (scaled)',
+            ), row=3, col=1)
+        fig_t1.add_hline(y=0.03, line_color='#ff4b4b', line_width=0.8,
+                         line_dash='dot', annotation_text="過熱 0.03%", row=3, col=1)
+
+        # Row 4: TVL
         if not tvl_hist.empty:
             if tvl_hist.index.tz is not None:
                 tvl_hist = tvl_hist.copy()
@@ -101,30 +146,22 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
             tvl_sub = tvl_hist.reindex(chart_df.index, method='nearest')
             fig_t1.add_trace(go.Scatter(
                 x=tvl_sub.index,
-                y=tvl_sub['tvl'] if 'tvl' in tvl_sub else [],
+                y=tvl_sub['tvl'] if 'tvl' in tvl_sub.columns else [],
                 mode='lines', fill='tozeroy',
                 line=dict(color='#a32eff'), name='TVL (USD)',
-            ), row=2, col=1)
+            ), row=4, col=1)
 
-        # Row 3: 資金費率
-        if not fund_hist.empty:
-            fund_sub = fund_hist.reindex(chart_df.index, method='nearest')
-            colors = ['#00ff88' if v > 0 else '#ff4b4b' for v in fund_sub['fundingRate']]
-            fig_t1.add_trace(go.Bar(
-                x=fund_sub.index, y=fund_sub['fundingRate'],
-                marker_color=colors, name='Funding Rate %',
-            ), row=3, col=1)
-
-        # Row 4: 穩定幣市值
+        # Row 5: 穩定幣市值
         if not stable_hist.empty:
             stab_sub = stable_hist.reindex(chart_df.index, method='nearest')
             fig_t1.add_trace(go.Scatter(
                 x=stab_sub.index, y=stab_sub['mcap'] / 1e9,
                 mode='lines', line=dict(color='#2E86C1'), name='Stablecoin Cap ($B)',
-            ), row=4, col=1)
+            ), row=5, col=1)
 
         fig_t1.update_layout(
-            height=900, template="plotly_dark", xaxis_rangeslider_visible=False
+            height=1000, template="plotly_dark", xaxis_rangeslider_visible=False,
+            legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='right', x=1),
         )
 
         # [Task #7] 將建好的圖表存入 session_state，下次直接複用
