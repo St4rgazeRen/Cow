@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Data cache (local CSV files)
+data/
+BTC_HISTORY.csv
+
+# Environment
+.env
+*.env
+
+# OS
+.DS_Store

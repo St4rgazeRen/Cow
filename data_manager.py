@@ -64,8 +64,10 @@ def update_stablecoin_history():
             processed = []
             for item in data:
                 ts = int(item['date'])
-                mcap = item['totalCirculating'].get('usd', 0)
-                
+                # API returns 'peggedUSD' (not 'usd')
+                total_circ = item.get('totalCirculating', {})
+                mcap = total_circ.get('peggedUSD', total_circ.get('usd', 0))
+
                 # Skip invalid or zero values
                 if mcap <= 1000: # Threshold to filter 0 or dust
                     continue
