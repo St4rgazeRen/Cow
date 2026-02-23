@@ -1,147 +1,123 @@
 """
 service/market_data.py
 市場數據服務 — BTC 歷史 OHLCV + DXY
-增量更新：SQLite 本地緩存，只下載缺失日期
-
-[Task #4] SQLite 取代 CSV：
-- 改用 data_manager 的 SQLite 工具函式，解決多執行緒寫入衝突
+增量更新：本地 CSV 緩存，只下載缺失日期
+加入 SSL 繞過機制與 Binance 備援 API
 """
 import os
 import pandas as pd
 import yfinance as yf
 import streamlit as st
 from datetime import datetime, timedelta
+import requests
+import urllib3
+import ccxt
 
-# [Task #4] 匯入 data_manager 提供的 SQLite 讀寫工具
-import data_manager
+# 關閉 urllib3 的 SSL 憑證驗證警告 (為配合公司內網防火牆設定)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 啟動時印出 yfinance 版本，方便 Streamlit Cloud 日誌診斷
-try:
-    print(f"[market_data] yfinance version: {yf.__version__}")
-except Exception:
-    print("[market_data] yfinance version: unknown")
+BTC_CSV = "BTC_HISTORY.csv"
 
-
-def _normalize_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
+def get_yf_session():
     """
-    統一 yfinance 欄位名稱為小寫，相容多版本。
-
-    yfinance 各版本欄位格式差異：
-    - <= 0.1.x: 平坦字串 ('Open', 'High', 'Low', 'Close', 'Volume')
-    - >= 0.2.18 單 ticker: MultiIndex [('Open','BTC-USD'), ('Close','BTC-USD'), ...]
-    - >= 0.2.45: MultiIndex 中第一層可能是 'Price' 等新格式
-
-    策略：若為 MultiIndex 則取第一層並轉小寫；否則直接轉小寫。
+    建立自訂的 requests Session 供 yfinance 使用。
+    1. verify=False: 關閉 SSL 驗證，繞過公司網路阻擋。
+    2. 加入 User-Agent: 降低在 Streamlit Cloud 上被 Yahoo 視為機器人阻擋的機率。
     """
-    if isinstance(df.columns, pd.MultiIndex):
-        # 取第一層（屬性名稱），捨棄第二層（ticker 符號）
-        df.columns = [str(c[0]).lower() for c in df.columns]
-    else:
-        df.columns = [str(c).lower() for c in df.columns]
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    return session
+
+def fetch_binance_daily(start_date_str):
+    """
+    備援方案：當 Yahoo Finance 失敗時，改從 Binance 抓取 BTC/USDT 日線數據。
+    使用專案既有的 ccxt 套件來獲取。
+    """
+    exchange = ccxt.binance()
+    # 將字串日期轉換為毫秒時間戳
+    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
+    
+    # ccxt 回傳格式: [timestamp, open, high, low, close, volume]
+    ohlcv = exchange.fetch_ohlcv('BTC/USDT', timeframe='1d', since=start_ts, limit=1000)
+    
+    if not ohlcv:
+        return pd.DataFrame()
+        
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('date', inplace=True)
+    df.drop(columns=['timestamp'], inplace=True)
+    
+    # 確保 index 格式與 yfinance 一致 (移除時區資訊)
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+        
     return df
-
-
-def _download_yf(ticker: str, start: str) -> pd.DataFrame:
-    """
-    健壯的 yfinance 下載封裝，對應不同版本的 API 差異。
-
-    yfinance 0.2.x 版本差異大，分兩步降級：
-    1. yf.download() — 主要方法，不傳 session 確保相容性
-    2. yf.Ticker().history() — 備援方法
-    兩者均失敗時返回空 DataFrame，由上層處理。
-    """
-    # 方法 1: yf.download()（不傳 session，避免新舊版本相容問題）
-    try:
-        df = yf.download(
-            ticker,
-            start=start,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,   # 自動還原拆股/除息，避免欄位帶 'Adj'
-        )
-        print(f"[yfinance] download({ticker}) → shape={df.shape}, "
-              f"columns={list(df.columns)[:5]}, empty={df.empty}")
-        if not df.empty:
-            normalized = _normalize_yf_columns(df)
-            # 去除 tz-aware index（部分版本 download() 也會帶時區）
-            if normalized.index.tz is not None:
-                normalized.index = normalized.index.tz_localize(None)
-            return normalized
-    except Exception as e:
-        print(f"[yfinance] download() 失敗，嘗試備援: {e}")
-
-    # 方法 2: yf.Ticker().history()（不同版本均支援）
-    try:
-        ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(
-            start=start,
-            interval="1d",
-            auto_adjust=True,
-        )
-        print(f"[yfinance] Ticker.history({ticker}) → shape={df.shape}, "
-              f"columns={list(df.columns)[:5]}, empty={df.empty}")
-        if not df.empty:
-            df.columns = [str(c).lower() for c in df.columns]
-            # Ticker.history() 回傳 tz-aware index，統一去除時區
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            return df
-    except Exception as e:
-        print(f"[yfinance] Ticker.history() 備援也失敗: {e}")
-
-    print(f"[yfinance] 所有方法均失敗，回傳空 DataFrame (ticker={ticker}, start={start})")
-    return pd.DataFrame()
-
 
 @st.cache_data(ttl=300)
 def fetch_market_data():
     """
-    獲取 BTC-USD 日線數據（SQLite 增量緩存）。
+    獲取 BTC-USD 日線數據（本地 CSV 增量更新）
     返回: (btc_df, dxy_df)
-
-    [Task #4] 數據流說明:
-    1. 從 SQLite 讀取現有 BTC 歷史（取代 pd.read_csv）
-    2. 計算缺失日期範圍，只下載新數據（省頻寬）
-    3. 合併後透過 data_manager._df_to_sqlite() 寫入（有寫入鎖）
-    4. DXY 每次從 yfinance 重新下載（小數據，不做緩存）
     """
     today = datetime.now().date()
+    # 實例化帶有 SSL 繞過與偽裝的 Session
+    session = get_yf_session()
 
-    # --- 1. 從 SQLite 讀取 BTC 歷史緩存 ---
-    # [Task #4] 取代原本的 pd.read_csv(BTC_CSV)
-    local_df  = data_manager._df_from_sqlite('btc_history')
-    last_date = None
+    # 1. 讀取本地緩存
+    if os.path.exists(BTC_CSV):
+        try:
+            local_df = pd.read_csv(BTC_CSV, index_col=0, parse_dates=True)
+            if local_df.index.tz is not None:
+                local_df.index = local_df.index.tz_localize(None)
+            last_date = local_df.index[-1].date()
+        except Exception:
+            local_df = pd.DataFrame()
+            last_date = None
+    else:
+        local_df = pd.DataFrame()
+        last_date = None
 
-    if not local_df.empty:
-        # 確保 index 為無時區 datetime
-        if local_df.index.tz is not None:
-            local_df.index = local_df.index.tz_localize(None)
-        last_date = local_df.index[-1].date()
-
-    # --- 2. 計算需要下載的日期範圍 ---
+    # 2. 確定需要下載的範圍
     btc_new = pd.DataFrame()
-
+    start_fetch_date = None
+    
     if last_date and last_date < today:
-        # 增量：只下載最後一筆之後的日期
-        start_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
-        btc_new = _download_yf("BTC-USD", start=start_date)
-        if btc_new.empty:
-            st.warning("[BTC] 增量更新失敗，使用現有緩存繼續運行")
-
+        start_fetch_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
     elif not last_date:
-        # 首次下載：從 2017-01-01 開始
-        btc_new = _download_yf("BTC-USD", start="2017-01-01")
-        if btc_new.empty:
-            st.error("[BTC] 首次下載失敗。請確認 yfinance 服務是否正常，或稍後重試。")
+        start_fetch_date = "2017-01-01"
 
-    # --- 3. 合併並寫入 SQLite ---
+    # 若有需要更新的日期，開始抓取
+    if start_fetch_date:
+        try:
+            # 主方案：使用 yfinance 並傳入自訂 session
+            btc_new = yf.download("BTC-USD", start=start_fetch_date, interval="1d", progress=False, session=session)
+            if not btc_new.empty:
+                # 處理 yfinance 可能回傳 MultiIndex columns 的問題
+                btc_new.columns = [
+                    c[0].lower() if isinstance(c, tuple) else c.lower()
+                    for c in btc_new.columns
+                ]
+        except Exception as e:
+            st.warning(f"⚠️ Yahoo Finance 連線異常，準備切換備援 API...")
+
+        # 備援方案：若 yfinance 抓不到資料 (如在 Streamlit Cloud 上)，改用 Binance
+        if btc_new.empty:
+            try:
+                btc_new = fetch_binance_daily(start_fetch_date)
+            except Exception as e:
+                st.error(f"❌ 備援 API (Binance) 也獲取失敗: {e}")
+
+    # 3. 合併並存檔
     if not btc_new.empty:
         full_df = pd.concat([local_df, btc_new]) if not local_df.empty else btc_new
         full_df = full_df[~full_df.index.duplicated(keep='last')]
         full_df.sort_index(inplace=True)
-
-        # [Task #4] 使用 data_manager 的 SQLite 寫入（帶 _db_lock 安全鎖）
-        data_manager._df_to_sqlite(full_df, 'btc_history')
+        # 本地端存檔，避免下次啟動重複下載
+        full_df.to_csv(BTC_CSV)
         btc_final = full_df
     else:
         btc_final = local_df
@@ -149,7 +125,14 @@ def fetch_market_data():
     if btc_final.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # --- 4. DXY（每次重新下載，資料量小不需緩存） ---
-    dxy = _download_yf("DX-Y.NYB", start="2017-01-01")
+    # 4. DXY (美元指數)
+    try:
+        # DXY 同樣套用自訂 session 避開 SSL 問題
+        dxy = yf.download("DX-Y.NYB", start="2017-01-01", interval="1d", progress=False, session=session)
+        dxy.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in dxy.columns]
+        if not dxy.empty and dxy.index.tz is not None:
+            dxy.index = dxy.index.tz_localize(None)
+    except Exception:
+        dxy = pd.DataFrame()
 
     return btc_final, dxy
