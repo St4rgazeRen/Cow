@@ -32,51 +32,65 @@ jobs:
 
       - name: Ping App (追蹤重定向 + 等待喚醒)
         id: ping_main
+        env:
+          APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
         run: |
           echo "🌐 正在連接 Streamlit App..."
 
           # -L: 追蹤 302/303 重定向（關鍵！不加此旗標 Streamlit 不算作訪問）
-          # --max-time 90: 允許 Streamlit 最多 90 秒喚醒
-          # -w "%{http_code}": 只輸出最終 HTTP 狀態碼
           HTTP_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" \
             --max-time 90 \
             --connect-timeout 15 \
-            --retry 2 \
-            --retry-delay 15 \
-            --retry-all-errors \
             -H "User-Agent: Mozilla/5.0 (compatible; StreamlitKeepAlive/1.0)" \
-            "${{ secrets.STREAMLIT_APP_URL }}")
+            "${APP_URL}")
 
-          echo "最終 HTTP 狀態碼: $HTTP_CODE"
-          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          # 確保 HTTP_CODE 不為空
+          HTTP_CODE="${HTTP_CODE:-000}"
+          echo "最終 HTTP 狀態碼: ${HTTP_CODE}"
 
-          if [[ "$HTTP_CODE" -ge 200 && "$HTTP_CODE" -lt 400 ]]; then
-            echo "✅ App 回應正常 (HTTP $HTTP_CODE) — 防休眠成功"
-          elif [[ "$HTTP_CODE" -eq 503 || "$HTTP_CODE" -eq 502 ]]; then
-            echo "😴 App 正在喚醒 (HTTP $HTTP_CODE)，等待 60 秒後重試..."
+          # 寫入 step output（用環境變數方式，避免 ${{ }} 提前展開問題）
+          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${HTTP_CODE}" -ge 200 && "${HTTP_CODE}" -lt 400 ]]; then
+            echo "✅ App 回應正常 (HTTP ${HTTP_CODE}) — 防休眠成功"
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          elif [[ "${HTTP_CODE}" -eq 503 || "${HTTP_CODE}" -eq 502 ]]; then
+            echo "😴 App 正在喚醒 (HTTP ${HTTP_CODE})，等待 60 秒後重試..."
             sleep 60
-            HTTP_CODE2=$(curl -s -L -o /dev/null -w "%{http_code}" \
+            HTTP_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" \
               --max-time 120 \
               -H "User-Agent: Mozilla/5.0 (compatible; StreamlitKeepAlive/1.0)" \
-              "${{ secrets.STREAMLIT_APP_URL }}")
-            echo "重試後 HTTP 狀態碼: $HTTP_CODE2"
-            echo "http_code=$HTTP_CODE2" >> $GITHUB_OUTPUT
-            if [[ "$HTTP_CODE2" -ge 200 && "$HTTP_CODE2" -lt 400 ]]; then
-              echo "✅ App 喚醒成功 (HTTP $HTTP_CODE2)"
+              "${APP_URL}")
+            HTTP_CODE="${HTTP_CODE:-000}"
+            echo "重試後 HTTP 狀態碼: ${HTTP_CODE}"
+            echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+            if [[ "${HTTP_CODE}" -ge 200 && "${HTTP_CODE}" -lt 400 ]]; then
+              echo "✅ App 喚醒成功 (HTTP ${HTTP_CODE})"
+              echo "status=success" >> "$GITHUB_OUTPUT"
             else
-              echo "❌ App 喚醒失敗 (HTTP $HTTP_CODE2)" && exit 1
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              echo "❌ App 喚醒失敗 (HTTP ${HTTP_CODE})" && exit 1
             fi
           else
-            echo "❌ App 回應異常 (HTTP $HTTP_CODE)" && exit 1
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "❌ App 回應異常 (HTTP ${HTTP_CODE})" && exit 1
           fi
 
       - name: 記錄 Ping 結果摘要
         if: always()
+        env:
+          PING_CODE: ${{ steps.ping_main.outputs.http_code }}
+          PING_STATUS: ${{ steps.ping_main.outputs.status }}
         run: |
-          echo "### 🤖 Streamlit Keepalive 報告" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 項目 | 結果 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 執行時間 | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
-          echo "| 最終 HTTP 狀態 | ${{ steps.ping_main.outputs.http_code }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 重定向追蹤 | ✅ 已啟用 (-L flag) |" >> $GITHUB_STEP_SUMMARY
+          STATUS_ICON="❓"
+          [[ "${PING_STATUS}" == "success" ]] && STATUS_ICON="✅ 成功"
+          [[ "${PING_STATUS}" == "failed" ]]  && STATUS_ICON="❌ 失敗"
+
+          echo "### 🤖 Streamlit Keepalive 報告" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 項目 | 結果 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 執行時間 | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 最終 HTTP 狀態 | **${PING_CODE:-未取得}** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Ping 結果 | ${STATUS_ICON} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 重定向追蹤 | ✅ 已啟用 (-L flag) |" >> "$GITHUB_STEP_SUMMARY"
