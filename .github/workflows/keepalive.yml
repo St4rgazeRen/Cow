@@ -1,96 +1,59 @@
 name: Streamlit Keepalive (防休眠 Ping)
 
-# ==============================================================================
-# 目的: Streamlit Community Cloud 免費版 7 天無人訪問後會進入休眠
-#       此 Workflow 每 24 小時自動 Ping 一次 App，防止休眠
-# 設定: 請在 GitHub Repo Settings → Secrets → Actions 加入:
-#       STREAMLIT_APP_URL = https://mfyyo9qf5mymsrouxkfdgj.streamlit.app/
-# 注意: curl 必須加 -L 追蹤 HTTP 302/303 重定向，否則 Streamlit 不會記錄為「訪問」
-# ==============================================================================
+# 使用 /_stcore/health 健康端點，不走認證跳轉，不需要 -L 旗標
+# 設定: GitHub Repo Settings -> Secrets -> Actions
+#       STREAMLIT_APP_URL = https://mfyyo9qf5mymsrouxkfdgj.streamlit.app
 
 on:
   schedule:
-    # 每天 UTC 00:00 / 12:00 各執行一次 (台灣時間 08:00 / 20:00)
-    - cron: '0 0 * * *'
-    - cron: '0 12 * * *'
-  workflow_dispatch:  # 允許手動觸發測試
+    - cron: '0 0 * * *'   # UTC 00:00 (台灣 08:00)
+    - cron: '0 12 * * *'  # UTC 12:00 (台灣 20:00)
+  workflow_dispatch:
 
 jobs:
   ping:
     name: Ping Streamlit App
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
-      - name: 檢查 STREAMLIT_APP_URL 是否已設定
-        run: |
-          if [ -z "${{ secrets.STREAMLIT_APP_URL }}" ]; then
-            echo "⚠️  STREAMLIT_APP_URL 未設定，請至 Repo Settings → Secrets → Actions 新增"
-            exit 1
-          fi
-          echo "✅ STREAMLIT_APP_URL 已設定"
-
-      - name: Ping App (追蹤重定向 + 等待喚醒)
-        id: ping_main
+      - name: Ping health endpoint
         env:
           APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
         run: |
-          echo "🌐 正在連接 Streamlit App..."
+          HEALTH="${APP_URL}/_stcore/health"
+          echo "Target: ${HEALTH}"
 
-          # -L: 追蹤 302/303 重定向（關鍵！不加此旗標 Streamlit 不算作訪問）
-          HTTP_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" \
-            --max-time 90 \
-            --connect-timeout 15 \
-            -H "User-Agent: Mozilla/5.0 (compatible; StreamlitKeepAlive/1.0)" \
-            "${APP_URL}")
+          CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            --max-time 60 --connect-timeout 10 \
+            "${HEALTH}" 2>/dev/null)
+          CODE="${CODE:-000}"
+          BODY=$(cat /tmp/body.txt 2>/dev/null | head -c 100)
+          echo "HTTP ${CODE} | ${BODY}"
 
-          # 確保 HTTP_CODE 不為空
-          HTTP_CODE="${HTTP_CODE:-000}"
-          echo "最終 HTTP 狀態碼: ${HTTP_CODE}"
-
-          # 寫入 step output（用 env: 區塊傳遞 secret，避免表達式提前展開問題）
-          echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
-
-          if [[ "${HTTP_CODE}" -ge 200 && "${HTTP_CODE}" -lt 400 ]]; then
-            echo "✅ App 回應正常 (HTTP ${HTTP_CODE}) — 防休眠成功"
-            echo "status=success" >> "$GITHUB_OUTPUT"
-          elif [[ "${HTTP_CODE}" -eq 503 || "${HTTP_CODE}" -eq 502 ]]; then
-            echo "😴 App 正在喚醒 (HTTP ${HTTP_CODE})，等待 60 秒後重試..."
+          if [ "${CODE}" = "200" ]; then
+            echo "App is running"
+          elif [ "${CODE}" = "503" ]; then
+            echo "App is sleeping, waiting 60s..."
             sleep 60
-            HTTP_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" \
-              --max-time 120 \
-              -H "User-Agent: Mozilla/5.0 (compatible; StreamlitKeepAlive/1.0)" \
-              "${APP_URL}")
-            HTTP_CODE="${HTTP_CODE:-000}"
-            echo "重試後 HTTP 狀態碼: ${HTTP_CODE}"
-            echo "http_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
-            if [[ "${HTTP_CODE}" -ge 200 && "${HTTP_CODE}" -lt 400 ]]; then
-              echo "✅ App 喚醒成功 (HTTP ${HTTP_CODE})"
-              echo "status=success" >> "$GITHUB_OUTPUT"
+            CODE=$(curl -s -o /tmp/body2.txt -w "%{http_code}" \
+              --max-time 90 --connect-timeout 10 \
+              "${HEALTH}" 2>/dev/null)
+            CODE="${CODE:-000}"
+            echo "Retry HTTP ${CODE}"
+            if [ "${CODE}" = "200" ]; then
+              echo "App woke up"
             else
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              echo "❌ App 喚醒失敗 (HTTP ${HTTP_CODE})" && exit 1
+              echo "Still waking (${CODE}), next ping will continue"
             fi
           else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "❌ App 回應異常 (HTTP ${HTTP_CODE})" && exit 1
+            echo "Unexpected response: ${CODE}"
+            exit 1
           fi
 
-      - name: 記錄 Ping 結果摘要
-        if: always()
-        env:
-          PING_CODE: ${{ steps.ping_main.outputs.http_code }}
-          PING_STATUS: ${{ steps.ping_main.outputs.status }}
-        run: |
-          STATUS_ICON="❓"
-          [[ "${PING_STATUS}" == "success" ]] && STATUS_ICON="✅ 成功"
-          [[ "${PING_STATUS}" == "failed" ]]  && STATUS_ICON="❌ 失敗"
-
-          echo "### 🤖 Streamlit Keepalive 報告" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 項目 | 結果 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 執行時間 | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 最終 HTTP 狀態 | **${PING_CODE:-未取得}** |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Ping 結果 | ${STATUS_ICON} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 重定向追蹤 | ✅ 已啟用 (-L flag) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Streamlit Keepalive" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Time | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HTTP | ${CODE} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Endpoint | \`/_stcore/health\` |" >> "$GITHUB_STEP_SUMMARY"
