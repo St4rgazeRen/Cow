@@ -108,6 +108,7 @@ def _df_from_sqlite(table_name: str, index_col: str = 'date') -> pd.DataFrame:
     從 SQLite 表格讀取 DataFrame。
     - 若表格不存在（首次啟動）回傳空 DataFrame
     - index_col 預設為 'date'，讀取後自動轉為 DatetimeIndex
+    - 欄位名稱統一轉小寫，相容 yfinance 存入的 'Date'（大寫）
     """
     try:
         with _get_db_connection() as conn:
@@ -119,9 +120,11 @@ def _df_from_sqlite(table_name: str, index_col: str = 'date') -> pd.DataFrame:
             if cursor.fetchone() is None:
                 return pd.DataFrame()  # 首次啟動，表格尚未建立
 
-            df = pd.read_sql(f"SELECT * FROM {table_name}", conn,
-                             parse_dates=[index_col])
+            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            # 欄位名稱統一轉小寫，避免 yfinance 的 'Date' vs 'date' 大小寫不一致問題
+            df.columns = [c.lower() for c in df.columns]
             if index_col in df.columns:
+                df[index_col] = pd.to_datetime(df[index_col])
                 df.set_index(index_col, inplace=True)
             return df
     except Exception as e:

@@ -173,7 +173,7 @@ def render(btc, curr, funding_rate, proxies, capital, risk_per_trade):
         st.session_state[ss_chart_key] = fig_main
         st.session_state[ss_hash_key]  = cache_key
 
-    st.plotly_chart(fig_main, use_container_width=True)
+    st.plotly_chart(fig_main, width='stretch')
 
     st.markdown("---")
 

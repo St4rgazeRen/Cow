@@ -101,7 +101,7 @@ def render(btc):
 
     g_col1, g_col2 = st.columns([1, 1])
     with g_col1:
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width='stretch')
     with g_col2:
         st.markdown(f"### {score_level}")
         st.markdown(f"**評分: {curr_score}/100**")
@@ -243,7 +243,7 @@ def render(btc):
         st.session_state[ss_hist_key] = fig_hist
         st.session_state[ss_hash_key] = cache_key
 
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width='stretch')
 
     st.markdown("---")
 
@@ -314,7 +314,7 @@ def render(btc):
         # [Task #7] 寫入 session_state（ss_hash_key 已在 C 段設定）
         st.session_state[ss_score_key] = fig_score
 
-    st.plotly_chart(fig_score, use_container_width=True)
+    st.plotly_chart(fig_score, width='stretch')
 
     # ──────────────────────────────────────────────────────────────
     # E. 指標一覽表
@@ -341,7 +341,7 @@ def render(btc):
         "底部閾值": ["< 0.45", "< 0", "< -5%", "< 1.0x", "< 0.5", "< 30", "< 2x", "< 0.8x"],
         "頂部閾值": ["> 1.2", "> 3.5", "> 10%", "> 4x", "> 4.0", "> 75", "> 10x", "> 2.4x"],
     }
-    st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)  # dataframe width param remains int-only
 
     st.markdown("""
     ---
