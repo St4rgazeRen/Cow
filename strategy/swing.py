@@ -3,6 +3,7 @@ strategy/swing.py
 Antigravity v4 波段交易策略 & 回測引擎
 純 Python，無 Streamlit 依賴
 """
+import math
 import numpy as np
 import pandas as pd
 
@@ -82,4 +83,20 @@ def run_swing_strategy_backtest(df, start_date, end_date, initial_capital=10_000
 
     trades_df = pd.DataFrame(trades)
     trade_count = len(trades_df[trades_df['Type'] == 'Buy']) if not trades_df.empty else 0
-    return trades_df, final_equity, roi, trade_count, mdd
+
+    # 進階統計: 勝率、Sharpe、平均盈虧
+    stats = {'win_rate': 0.0, 'sharpe': 0.0, 'avg_profit': 0.0, 'avg_loss': 0.0}
+    if not trades_df.empty and 'PnL%' in trades_df.columns:
+        sell_trades = trades_df[trades_df['Type'] == 'Sell'].dropna(subset=['PnL%'])
+        if not sell_trades.empty:
+            winners = sell_trades[sell_trades['PnL%'] > 0]
+            losers = sell_trades[sell_trades['PnL%'] <= 0]
+            stats['win_rate'] = len(winners) / len(sell_trades) * 100
+            stats['avg_profit'] = winners['PnL%'].mean() if not winners.empty else 0.0
+            stats['avg_loss'] = losers['PnL%'].mean() if not losers.empty else 0.0
+            # 年化 Sharpe (以每筆交易報酬率估算)
+            rets = sell_trades['PnL%'].values / 100
+            if len(rets) > 1 and rets.std() > 0:
+                stats['sharpe'] = (rets.mean() / rets.std()) * math.sqrt(252)
+
+    return trades_df, final_equity, roi, trade_count, mdd, stats

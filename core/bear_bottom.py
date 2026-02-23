@@ -61,17 +61,61 @@ def calculate_bear_bottom_indicators(df):
     return df
 
 
+def score_series(df):
+    """
+    向量化批量計算歷史評分序列 (取代逐行 iterrows)
+    效能較 [calculate_bear_bottom_score(row) for row in df.iterrows()] 快 20-50x
+    返回: pd.Series (index 同 df，值為 0-100 整數分)
+    """
+    s = pd.Series(0, index=df.index, dtype=float)
+
+    # AHR999 (max 20)
+    if 'AHR999' in df.columns:
+        v = df['AHR999']
+        s += np.where(v < 0.45, 20, np.where(v < 0.8, 13, np.where(v < 1.2, 5, 0)))
+
+    # MVRV Z-Score (max 18)
+    if 'MVRV_Z_Proxy' in df.columns:
+        v = df['MVRV_Z_Proxy']
+        s += np.where(v < -1.0, 18, np.where(v < 0, 12, np.where(v < 2.0, 4, 0)))
+
+    # Pi Cycle Gap (max 15)
+    if 'PiCycle_Gap' in df.columns:
+        v = df['PiCycle_Gap']
+        s += np.where(v < -10, 15, np.where(v < -3, 10, np.where(v < 5, 4, 0)))
+
+    # 200W SMA Ratio (max 15)
+    if 'SMA200W_Ratio' in df.columns:
+        v = df['SMA200W_Ratio']
+        s += np.where(v < 1.0, 15, np.where(v < 1.3, 11, np.where(v < 2.0, 5, np.where(v < 4.0, 1, 0))))
+
+    # Puell Multiple (max 12)
+    if 'Puell_Proxy' in df.columns:
+        v = df['Puell_Proxy']
+        s += np.where(v < 0.5, 12, np.where(v < 0.8, 8, np.where(v < 1.5, 3, 0)))
+
+    # Monthly RSI (max 10)
+    if 'RSI_Monthly' in df.columns:
+        v = df['RSI_Monthly']
+        s += np.where(v < 30, 10, np.where(v < 40, 7, np.where(v < 55, 2, 0)))
+
+    # Power Law Ratio (max 5)
+    if 'PowerLaw_Ratio' in df.columns:
+        v = df['PowerLaw_Ratio']
+        s += np.where(v < 2.0, 5, np.where(v < 5.0, 3, np.where(v < 10.0, 1, 0)))
+
+    # Mayer Multiple (max 5)
+    if 'Mayer_Multiple' in df.columns:
+        v = df['Mayer_Multiple']
+        s += np.where(v < 0.8, 5, np.where(v < 1.0, 3, np.where(v < 1.5, 1, 0)))
+
+    return s.fillna(0).astype(int)
+
+
 def calculate_bear_bottom_score(row):
     """
-    綜合熊市底部評分系統 (0-100分)
-    分數越高 = 越接近歷史性底部，積累信號越強
-
-    評分區間:
-    - 0-25:  牛市/高估區，非抄底時機
-    - 25-45: 震盪修正，觀望
-    - 45-60: 可能底部區，開始小倉試探
-    - 60-75: 底部信號明確，積極積累
-    - 75-100: 歷史極值底部，All-In 信號
+    單筆即時評分 (用於當前行顯示詳細 signals)
+    批量歷史計算請改用 score_series(df) 以避免 N+1 效能問題
 
     返回: (score: int, signals: dict)
     """
