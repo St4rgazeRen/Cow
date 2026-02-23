@@ -48,9 +48,10 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                     st.error("結束日期必須晚於開始日期")
                 else:
                     with st.spinner("正在模擬交易..."):
-                        trades, final_val, roi, num_trades, mdd = run_swing_strategy_backtest(
+                        trades, final_val, roi, num_trades, mdd, stats = run_swing_strategy_backtest(
                             btc, start_d, end_d, init_cap
                         )
+                        # 第一行: 核心指標
                         m1, m2, m3, m4, m5 = st.columns(5)
                         m1.metric("最終資產", f"${final_val:,.0f}")
                         m2.metric("總報酬率 (ROI)", f"{roi:+.2f}%", delta_color="normal")
@@ -61,6 +62,16 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                         m3.metric("Buy & Hold 報酬", f"{bh_roi:+.2f}%")
                         m4.metric("最大回撤 (MDD)", f"{mdd:.2f}%", delta_color="inverse")
                         m5.metric("總交易", f"{num_trades} 次")
+
+                        # 第二行: 進階統計
+                        st.markdown("---")
+                        s1, s2, s3, s4 = st.columns(4)
+                        s1.metric("勝率 (Win Rate)", f"{stats['win_rate']:.1f}%")
+                        s2.metric("Sharpe Ratio", f"{stats['sharpe']:.2f}")
+                        s3.metric("平均獲利", f"{stats['avg_profit']:+.2f}%",
+                                  delta_color="normal")
+                        s4.metric("平均虧損", f"{stats['avg_loss']:+.2f}%",
+                                  delta_color="inverse")
 
                         mask = (btc.index >= pd.Timestamp(start_d)) & \
                                (btc.index <= pd.Timestamp(end_d))

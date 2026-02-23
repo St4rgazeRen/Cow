@@ -36,14 +36,24 @@ def calculate_bs_apy(S, K, T_days, sigma_annual, option_type='call'):
     return max(apy, 0.05)
 
 
-def calculate_ladder_strategy(row, product_type):
+def calculate_ladder_strategy(row, product_type, t_days=3):
     """
-    生成 3 檔梯形行權價建議
+    生成 3 檔梯形行權價建議 (含 BS APY 預估)
     product_type: 'SELL_HIGH' | 'BUY_LOW'
+    t_days: 產品期限（天），用於計算 APY，預設 3 天
     """
     atr = row['ATR']
     close = row['close']
     vol_factor = 1.2 if (atr / close) > 0.02 else 1.0
+
+    # 年化波動率 (ATR 估算)
+    sigma = max((atr / close) * math.sqrt(365), 0.3)
+    opt_type = 'call' if product_type == "SELL_HIGH" else 'put'
+
+    def _apy_str(strike):
+        apy = calculate_bs_apy(close, strike, t_days, sigma, opt_type) * 100
+        return f"{apy:.1f}%"
+
     targets = []
 
     if product_type == "SELL_HIGH":
@@ -52,9 +62,12 @@ def calculate_ladder_strategy(row, product_type):
         s2 = max(base + atr * 2.0 * vol_factor, row.get('R2', 0), s1 * 1.01)
         s3 = max(base + atr * 3.5 * vol_factor, s2 * 1.01)
         targets = [
-            {"Type": "激進", "Strike": s1, "Weight": "30%", "Distance": (s1 / close - 1) * 100},
-            {"Type": "中性", "Strike": s2, "Weight": "30%", "Distance": (s2 / close - 1) * 100},
-            {"Type": "保守", "Strike": s3, "Weight": "40%", "Distance": (s3 / close - 1) * 100},
+            {"Type": "激進", "Strike": s1, "Weight": "30%",
+             "Distance": (s1 / close - 1) * 100, "APY(年化)": _apy_str(s1)},
+            {"Type": "中性", "Strike": s2, "Weight": "30%",
+             "Distance": (s2 / close - 1) * 100, "APY(年化)": _apy_str(s2)},
+            {"Type": "保守", "Strike": s3, "Weight": "40%",
+             "Distance": (s3 / close - 1) * 100, "APY(年化)": _apy_str(s3)},
         ]
     elif product_type == "BUY_LOW":
         base = min(row['BB_Lower'], row.get('S1', row['BB_Lower']))
@@ -62,16 +75,19 @@ def calculate_ladder_strategy(row, product_type):
         s2 = min(base - atr * 2.0 * vol_factor, row.get('S2', 999_999), s1 * 0.99)
         s3 = min(base - atr * 3.5 * vol_factor, s2 * 0.99)
         targets = [
-            {"Type": "激進", "Strike": s1, "Weight": "30%", "Distance": (close / s1 - 1) * 100},
-            {"Type": "中性", "Strike": s2, "Weight": "30%", "Distance": (close / s2 - 1) * 100},
-            {"Type": "保守", "Strike": s3, "Weight": "40%", "Distance": (close / s3 - 1) * 100},
+            {"Type": "激進", "Strike": s1, "Weight": "30%",
+             "Distance": (close / s1 - 1) * 100, "APY(年化)": _apy_str(s1)},
+            {"Type": "中性", "Strike": s2, "Weight": "30%",
+             "Distance": (close / s2 - 1) * 100, "APY(年化)": _apy_str(s2)},
+            {"Type": "保守", "Strike": s3, "Weight": "40%",
+             "Distance": (close / s3 - 1) * 100, "APY(年化)": _apy_str(s3)},
         ]
 
     return targets
 
 
-def get_current_suggestion(df, ma_short_col='EMA_20', ma_long_col='SMA_50'):
-    """生成當前雙幣理財建議（含梯形行權價）"""
+def get_current_suggestion(df, ma_short_col='EMA_20', ma_long_col='SMA_50', t_days=3):
+    """生成當前雙幣理財建議（含梯形行權價與 APY 估算）"""
     if df.empty:
         return None
     curr_row = df.iloc[-1]
@@ -81,8 +97,8 @@ def get_current_suggestion(df, ma_short_col='EMA_20', ma_long_col='SMA_50'):
     is_bearish = curr_row[ma_short_col] < curr_row[ma_long_col]
     is_weekend = weekday >= 5
 
-    sell_ladder = [] if is_weekend else calculate_ladder_strategy(curr_row, "SELL_HIGH")
-    buy_ladder = [] if (is_weekend or is_bearish) else calculate_ladder_strategy(curr_row, "BUY_LOW")
+    sell_ladder = [] if is_weekend else calculate_ladder_strategy(curr_row, "SELL_HIGH", t_days)
+    buy_ladder = [] if (is_weekend or is_bearish) else calculate_ladder_strategy(curr_row, "BUY_LOW", t_days)
 
     reasons = []
     if is_weekend:

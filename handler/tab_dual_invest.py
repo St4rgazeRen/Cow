@@ -12,12 +12,20 @@ def render(btc, realtime_data):
     st.markdown("### 💰 雙幣理財顧問 (Dual Investment)")
 
     defi_yield = realtime_data.get('defi_yield') or 5.0
-    st.info(
-        f"💡 **DeFi 機會成本參考**: Aave USDT 活存約 **{defi_yield:.2f}%**。"
-        "若雙幣理財 APY 低於此值，建議改為單純放貸。"
+
+    # 期限選擇（影響 APY 計算）
+    t_days = st.select_slider(
+        "產品期限（天）— 影響 APY 估算",
+        options=[1, 3, 7, 14, 30],
+        value=3,
     )
 
-    suggestion = get_current_suggestion(btc)
+    st.info(
+        f"💡 **DeFi 機會成本參考**: Aave USDT 活存約 **{defi_yield:.2f}%** 年化。"
+        f"  若 APY(年化) 低於此值，建議改為單純放貸。"
+    )
+
+    suggestion = get_current_suggestion(btc, t_days=t_days)
 
     if suggestion:
         s_col1, s_col2 = st.columns([1, 2])
@@ -44,7 +52,7 @@ def render(btc, realtime_data):
                     df_sell = pd.DataFrame(suggestion['sell_ladder'])
                     df_sell['Strike'] = df_sell['Strike'].apply(lambda x: f"${x:,.0f}")
                     df_sell['Distance'] = df_sell['Distance'].apply(lambda x: f"+{x:.2f}%")
-                    st.table(df_sell[['Type', 'Strike', 'Weight', 'Distance']])
+                    st.table(df_sell[['Type', 'Strike', 'Weight', 'Distance', 'APY(年化)']])
                 else:
                     st.info("暫無建議 (可能是週末或數據不足)")
 
@@ -53,6 +61,6 @@ def render(btc, realtime_data):
                     df_buy = pd.DataFrame(suggestion['buy_ladder'])
                     df_buy['Strike'] = df_buy['Strike'].apply(lambda x: f"${x:,.0f}")
                     df_buy['Distance'] = df_buy['Distance'].apply(lambda x: f"{x:.2f}%")
-                    st.table(df_buy[['Type', 'Strike', 'Weight', 'Distance']])
+                    st.table(df_buy[['Type', 'Strike', 'Weight', 'Distance', 'APY(年化)']])
                 else:
                     st.warning("⚠️ 趨勢偏空或濾網觸發，不建議 Buy Low (接刀)")
