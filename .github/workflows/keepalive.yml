@@ -1,8 +1,9 @@
 name: Streamlit Keepalive (防休眠 Ping)
 
-# 使用 /_stcore/health 健康端點，不走認證跳轉，不需要 -L 旗標
+# 使用 /_stcore/health 健康端點，不走認證跳轉
 # 設定: GitHub Repo Settings -> Secrets -> Actions
 #       STREAMLIT_APP_URL = https://mfyyo9qf5mymsrouxkfdgj.streamlit.app
+#       (結尾不要加斜線 /)
 
 on:
   schedule:
@@ -21,10 +22,14 @@ jobs:
         env:
           APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
         run: |
-          HEALTH="${APP_URL}/_stcore/health"
+          # 去除尾端斜線，避免 //stcore/health 雙斜線問題
+          BASE="${APP_URL%/}"
+          HEALTH="${BASE}/_stcore/health"
           echo "Target: ${HEALTH}"
 
-          CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+          # -L --max-redirs 3: 僅跟隨 URL 正規化的 301 (無認證循環風險)
+          CODE=$(curl -s -L --max-redirs 3 \
+            -o /tmp/body.txt -w "%{http_code}" \
             --max-time 60 --connect-timeout 10 \
             "${HEALTH}" 2>/dev/null)
           CODE="${CODE:-000}"
@@ -32,11 +37,12 @@ jobs:
           echo "HTTP ${CODE} | ${BODY}"
 
           if [ "${CODE}" = "200" ]; then
-            echo "App is running"
+            echo "App is running (HTTP 200)"
           elif [ "${CODE}" = "503" ]; then
-            echo "App is sleeping, waiting 60s..."
+            echo "App sleeping, waiting 60s..."
             sleep 60
-            CODE=$(curl -s -o /tmp/body2.txt -w "%{http_code}" \
+            CODE=$(curl -s -L --max-redirs 3 \
+              -o /tmp/body2.txt -w "%{http_code}" \
               --max-time 90 --connect-timeout 10 \
               "${HEALTH}" 2>/dev/null)
             CODE="${CODE:-000}"
@@ -47,7 +53,7 @@ jobs:
               echo "Still waking (${CODE}), next ping will continue"
             fi
           else
-            echo "Unexpected response: ${CODE}"
+            echo "Unexpected: ${CODE}"
             exit 1
           fi
 
