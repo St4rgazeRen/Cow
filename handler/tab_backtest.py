@@ -97,7 +97,7 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                                 marker=dict(color='#ff4b4b', symbol='triangle-down', size=10),
                             ))
                         fig.update_layout(title="波段交易買賣點回放", height=500, template="plotly_dark")
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                         if not trades.empty:
                             with st.expander("交易明細"):
                                 st.dataframe(trades)
@@ -122,7 +122,7 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                     fig2.update_layout(
                         title="資產淨值走勢 (BTC本位)", height=400, template="plotly_dark"
                     )
-                    st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig2, width='stretch')
                     with st.expander("詳細交易日誌"):
                         st.dataframe(logs)
                 else:
@@ -214,4 +214,4 @@ def render(btc, call_risk, put_risk, ahr_threshold):
             title="策略有效性驗證", height=400,
             template="plotly_dark", yaxis_type="log",
         )
-        st.plotly_chart(fig_m, use_container_width=True)
+        st.plotly_chart(fig_m, width='stretch')

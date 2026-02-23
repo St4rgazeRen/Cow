@@ -168,7 +168,7 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
         st.session_state[ss_fig_key]  = fig_t1
         st.session_state[ss_hash_key] = cache_key
 
-    st.plotly_chart(fig_t1, use_container_width=True)
+    st.plotly_chart(fig_t1, width='stretch')
 
     # --- 市場相位判定 ---
     price = curr['close']

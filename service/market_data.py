@@ -15,6 +15,12 @@ from datetime import datetime, timedelta
 # [Task #4] 匯入 data_manager 提供的 SQLite 讀寫工具
 import data_manager
 
+# 啟動時印出 yfinance 版本，方便 Streamlit Cloud 日誌診斷
+try:
+    print(f"[market_data] yfinance version: {yf.__version__}")
+except Exception:
+    print("[market_data] yfinance version: unknown")
+
 
 def _normalize_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -53,8 +59,14 @@ def _download_yf(ticker: str, start: str) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,   # 自動還原拆股/除息，避免欄位帶 'Adj'
         )
+        print(f"[yfinance] download({ticker}) → shape={df.shape}, "
+              f"columns={list(df.columns)[:5]}, empty={df.empty}")
         if not df.empty:
-            return _normalize_yf_columns(df)
+            normalized = _normalize_yf_columns(df)
+            # 去除 tz-aware index（部分版本 download() 也會帶時區）
+            if normalized.index.tz is not None:
+                normalized.index = normalized.index.tz_localize(None)
+            return normalized
     except Exception as e:
         print(f"[yfinance] download() 失敗，嘗試備援: {e}")
 
@@ -66,6 +78,8 @@ def _download_yf(ticker: str, start: str) -> pd.DataFrame:
             interval="1d",
             auto_adjust=True,
         )
+        print(f"[yfinance] Ticker.history({ticker}) → shape={df.shape}, "
+              f"columns={list(df.columns)[:5]}, empty={df.empty}")
         if not df.empty:
             df.columns = [str(c).lower() for c in df.columns]
             # Ticker.history() 回傳 tz-aware index，統一去除時區
@@ -75,6 +89,7 @@ def _download_yf(ticker: str, start: str) -> pd.DataFrame:
     except Exception as e:
         print(f"[yfinance] Ticker.history() 備援也失敗: {e}")
 
+    print(f"[yfinance] 所有方法均失敗，回傳空 DataFrame (ticker={ticker}, start={start})")
     return pd.DataFrame()
 
 

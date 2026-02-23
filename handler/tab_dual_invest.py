@@ -195,7 +195,7 @@ def render(btc, realtime_data):
         st.session_state[ss_chart_key] = fig_ladder
         st.session_state[ss_hash_key]  = cache_key
 
-    st.plotly_chart(fig_ladder, use_container_width=True)
+    st.plotly_chart(fig_ladder, width='stretch')
 
     st.markdown("---")
 
