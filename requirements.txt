@@ -6,3 +6,12 @@ plotly
 yfinance
 ccxt
 requests
+urllib3
+# [Task #2] 非同步 HTTP 客戶端，用於並行抓取資金費率分頁
+httpx
+# [Task #8] 環境變數管理，從 .env 讀取 API Key
+python-dotenv
+# [Task #9] LINE Bot 推播通知
+line-bot-sdk
+# [Task #10] 單元測試框架
+pytest
