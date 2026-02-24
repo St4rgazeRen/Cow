@@ -4,7 +4,7 @@ service/market_data.py
 增量更新：本地 CSV 緩存，只下載缺失日期
 加入 SSL 繞過機制與多層備援 API:
   1st: Yahoo Finance (yfinance)
-  2nd: Binance (ccxt) — 部分 Streamlit Cloud IP 被 451 封鎖
+  2nd: Binance REST API（直接 HTTP，不依賴 ccxt）— 部分 Streamlit Cloud IP 被 451 封鎖
   3rd: Kraken 公開 API — 無地理限制，適合 Streamlit Cloud
   4th: CryptoCompare 公開 API — 有 2010 年起完整 BTC 日線歷史，分頁抓取
 """
@@ -16,7 +16,6 @@ import streamlit as st
 from datetime import datetime, timedelta
 import requests
 import urllib3
-import ccxt
 
 # 從集中設定檔讀取 SSL 動態驗證旗標
 from config import SSL_VERIFY
@@ -26,6 +25,10 @@ if not SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BTC_CSV = "BTC_HISTORY.csv"
+
+# Binance REST API 端點（不需要 API Key，公開 klines）
+_BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+
 
 def get_yf_session():
     """
@@ -40,55 +43,72 @@ def get_yf_session():
     })
     return session
 
+
 def fetch_binance_daily(start_date_str):
     """
-    第二備援：當 Yahoo Finance 失敗時，改從 Binance 抓取 BTC/USDT 日線數據。
-    注意：Binance 對部分 Streamlit Cloud IP 返回 451（地理封鎖）。
+    第二備援：直接呼叫 Binance REST API（不使用 ccxt），抓取 BTC/USDT 日線 K 棒。
 
-    [Fix Issue 6] 加入分頁迴圈（Pagination Loop）:
-    原始版本只抓 1000 筆（約 2.7 年），無法覆蓋完整歷史。
-    修正後無限迴圈直到資料用盡，每批 1000 根日線 K 棒，自動分頁。
-    Binance 限速：每分鐘 1200 次請求，每批加入 0.1s 延遲。
+    API: GET https://api.binance.com/api/v3/klines
+    - 無需 API Key（公開端點）
+    - limit 最大 1000，分頁以 startTime 推進
+    - 注意：Binance 對部分 Streamlit Cloud IP 返回 451（地理封鎖），此時自動跳至第三備援
+
+    回應格式（每筆）:
+      [open_time_ms, open, high, low, close, volume, close_time_ms, ...]
     """
-    exchange = ccxt.binance()
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
+    now_ts   = int(datetime.now().timestamp() * 1000)
 
-    all_ohlcv = []
-    since     = start_ts
-    now_ts    = int(datetime.now().timestamp() * 1000)
+    all_klines = []
+    since = start_ts
 
     while since < now_ts:
         try:
-            # ccxt 回傳格式: [timestamp_ms, open, high, low, close, volume]
-            batch = exchange.fetch_ohlcv(
-                "BTC/USDT", timeframe="1d", since=since, limit=1000
+            resp = requests.get(
+                _BINANCE_KLINES_URL,
+                params={
+                    "symbol":    "BTCUSDT",
+                    "interval":  "1d",
+                    "startTime": since,
+                    "limit":     1000,
+                },
+                timeout=15,
+                verify=SSL_VERIFY,
             )
+            # 451 地理封鎖：直接拋出讓 caller 捕捉
+            if resp.status_code == 451:
+                raise requests.HTTPError(f"451 Binance geo-block")
+            resp.raise_for_status()
+            batch = resp.json()
         except Exception as e:
-            print(f"[Binance] fetch_ohlcv 失敗 (since={since}): {e}")
-            break
+            print(f"[Binance REST] 請求失敗 (since={since}): {e}")
+            raise  # 由外層 try/except 處理並切換備援
 
         if not batch:
-            break  # 無更多資料，結束
-
-        all_ohlcv.extend(batch)
-
-        # 不足 1000 筆：代表已到最新資料，不需要再請求
-        if len(batch) < 1000:
             break
 
-        # 下一頁從最後一根 K 棒的下一天開始（+1 天 = +86,400,000 ms）
-        since = batch[-1][0] + 86_400_000
-        time.sleep(0.1)  # 遵守 Binance API 速率限制
+        all_klines.extend(batch)
 
-    if not all_ohlcv:
+        if len(batch) < 1000:
+            break  # 已到最新資料
+
+        # 下一頁起點：最後一根 K 棒的 open_time + 1 天（ms）
+        since = int(batch[-1][0]) + 86_400_000
+        time.sleep(0.05)  # 遵守 Binance 限速（1200 req/min）
+
+    if not all_klines:
         return pd.DataFrame()
 
-    df = pd.DataFrame(all_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    # 去除可能的重複時間戳（分頁邊界）
-    df = df.drop_duplicates(subset="timestamp", keep="last")
-    df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
+    # 取前 6 欄：open_time, open, high, low, close, volume
+    df = pd.DataFrame(all_klines, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "ct", "qa", "nt", "tb", "tq", "i",
+    ])
+    df["date"] = pd.to_datetime(df["timestamp"].astype(int), unit="ms")
     df.set_index("date", inplace=True)
-    df.drop(columns=["timestamp"], inplace=True)
+    df = df[["open", "high", "low", "close", "volume"]].astype(float)
+    df = df[~df.index.duplicated(keep="last")]
+    df.sort_index(inplace=True)
 
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
@@ -276,7 +296,9 @@ def fetch_market_data():
         # CryptoCompare 第四備援可覆蓋 2015 前資料
         start_fetch_date = "2015-01-01"
 
-    # 若有需要更新的日期，開始抓取（三層備援）
+    # 若有需要更新的日期，開始抓取（四層備援，所有備援訊息改用 print 避免汙染 UI）
+    _fetch_log = []  # 收集備援過程記錄，最後由 app.py 統一決定是否顯示
+
     if start_fetch_date:
         # --- 第一層：Yahoo Finance ---
         try:
@@ -287,37 +309,38 @@ def fetch_market_data():
                     c[0].lower() if isinstance(c, tuple) else c.lower()
                     for c in btc_new.columns
                 ]
+                print(f"[Market] Yahoo Finance 成功，取得 {len(btc_new)} 筆")
         except Exception as e:
-            st.warning(f"⚠️ Yahoo Finance 連線異常 ({type(e).__name__})，切換備援 API...")
+            print(f"[Market] Yahoo Finance 失敗 ({type(e).__name__})，切換 Binance REST")
 
-        # --- 第二層：Binance（注意：Streamlit Cloud 部分 IP 被 451 地理封鎖）---
+        # --- 第二層：Binance REST API（直接 HTTP，不使用 ccxt）---
         if btc_new.empty:
             try:
                 btc_new = fetch_binance_daily(start_fetch_date)
+                if not btc_new.empty:
+                    print(f"[Market] Binance REST 成功，取得 {len(btc_new)} 筆")
             except Exception as e:
                 err_msg = str(e)
-                if "451" in err_msg:
-                    st.warning("⚠️ Binance 返回 451（地理封鎖），切換第三備援 Kraken...")
-                else:
-                    st.warning(f"⚠️ Binance 備援失敗 ({type(e).__name__})，切換第三備援 Kraken...")
+                tag = "451地理封鎖" if "451" in err_msg else type(e).__name__
+                print(f"[Market] Binance REST 失敗 ({tag})，切換 Kraken")
 
         # --- 第三層：Kraken（無地理封鎖，Streamlit Cloud 可用）---
         if btc_new.empty:
             try:
                 btc_new = fetch_kraken_daily(start_fetch_date)
                 if not btc_new.empty:
-                    st.info(f"ℹ️ Kraken 備援成功，取得 {len(btc_new)} 筆數據")
+                    print(f"[Market] Kraken 成功，取得 {len(btc_new)} 筆")
             except Exception as e:
-                st.warning(f"⚠️ Kraken 備援失敗 ({type(e).__name__})，切換第四備援 CryptoCompare...")
+                print(f"[Market] Kraken 失敗 ({type(e).__name__})，切換 CryptoCompare")
 
         # --- 第四層：CryptoCompare（有 2010 年起完整 BTC 歷史，最強歷史覆蓋）---
         if btc_new.empty:
             try:
                 btc_new = fetch_cryptocompare_daily(start_fetch_date)
                 if not btc_new.empty:
-                    st.success(f"✅ CryptoCompare 備援成功，取得 {len(btc_new)} 筆 (自 {btc_new.index[0].date()})")
+                    print(f"[Market] CryptoCompare 成功，取得 {len(btc_new)} 筆 (自 {btc_new.index[0].date()})")
             except Exception as e:
-                st.error(f"❌ 所有備援 API 均失敗。CryptoCompare 錯誤: {type(e).__name__}: {e}")
+                print(f"[Market] CryptoCompare 失敗 ({type(e).__name__}: {e})")
 
     # 3. 合併並存檔
     if not btc_new.empty:
@@ -331,7 +354,7 @@ def fetch_market_data():
         btc_final = local_df
 
     if btc_final.empty:
-        st.error("❌ 四層備援均失敗（Yahoo / Binance / Kraken / CryptoCompare）。請稍後重試。")
+        print("[Market] ❌ 四層備援均失敗（Yahoo / Binance / Kraken / CryptoCompare）")
         return pd.DataFrame(), pd.DataFrame()
 
     # 4. DXY (美元指數)

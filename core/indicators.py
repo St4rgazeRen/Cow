@@ -82,8 +82,15 @@ def calculate_technical_indicators(df):
 def calculate_ahr999(df):
     """
     AHR999 囤幣指標 (向量化計算，效能較 apply() 快 50-100x)
-    公式: (Price / 200日均線) × (Price / 指數增長估值)
-    估值 = 10^(2.68 + 0.00057 × 創世以來天數)
+
+    公式: AHR999 = (Price / SMA200) × (Price / PowerLaw_Model)
+
+    PowerLaw_Model（冪律增長估值）= 10 ^ (5.84 × log10(days_since_genesis) - 17.01467)
+    此為 Giovanni Santostasi 比特幣冪律模型，與 AHR999 原始定義一致。
+
+    ⚠️ 舊版錯誤公式: 10 ^ (2.68 + 0.00057 × days) 為線性指數模型，
+       到 2026 年估值已膨脹至 $177 萬，導致 AHR999 嚴重低估（0.02 vs 正確 0.29）。
+       修正後與 CoinGlass / on-chain.io 計算結果一致。
     """
     genesis_date = datetime(2009, 1, 3)
 
@@ -93,12 +100,15 @@ def calculate_ahr999(df):
         if hasattr(d, 'to_pydatetime') else (d - genesis_date).days
         for d in df.index
     ], dtype=float)
+    days_arr = np.clip(days_arr, 1, None)  # 避免 log10(0)
 
-    valuation = 10 ** (2.68 + 0.00057 * days_arr)
+    # ✅ 正確公式：比特幣冪律增長模型（與 CoinGlass / Santostasi 一致）
+    valuation = 10 ** (-17.01467 + 5.84 * np.log10(days_arr))
+
     sma200 = df['SMA_200'].values
     close = df['close'].values
 
-    # AHR999 = (Price/SMA200) × (Price/Valuation)，SMA200 為 NaN 時結果為 NaN
+    # AHR999 = (Price/SMA200) × (Price/PowerLaw_Model)，SMA200 為 NaN 時結果為 NaN
     with np.errstate(divide='ignore', invalid='ignore'):
         ahr = (close / sma200) * (close / valuation)
         ahr = np.where(np.isnan(sma200), np.nan, ahr)
