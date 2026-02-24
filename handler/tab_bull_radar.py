@@ -261,32 +261,39 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
         st.markdown("### Level 3: 宏觀視角")
         if not dxy.empty:
             comm_idx = btc.index.intersection(dxy.index)
-            corr_90 = btc.loc[comm_idx]['close'].rolling(90).corr(
-                dxy.loc[comm_idx]['close']
-            ).iloc[-1]
-            st.metric(
-                "BTC vs DXY 相關性 (90d)", f"{corr_90:.2f}",
-                "高度負相關 (正常)" if corr_90 < -0.5 else "相關性減弱/脫鉤",
-            )
+            if len(comm_idx) >= 90:
+                corr_90 = btc.loc[comm_idx]['close'].rolling(90).corr(
+                    dxy.loc[comm_idx]['close']
+                ).iloc[-1]
+                if corr_90 != corr_90:  # NaN check
+                    st.metric("BTC vs DXY 相關性 (90d)", "計算中", "數據累積不足 90 天")
+                else:
+                    st.metric(
+                        "BTC vs DXY 相關性 (90d)", f"{corr_90:.2f}",
+                        "高度負相關 (正常)" if corr_90 < -0.5 else "相關性減弱/脫鉤",
+                    )
+            else:
+                st.metric("BTC vs DXY 相關性 (90d)", "—", "DXY 共同數據不足")
         else:
-            st.metric("BTC vs DXY", "N/A", "數據不足")
+            st.metric("BTC vs DXY 相關性 (90d)", "—", "DXY 數據載入失敗")
 
-        if realtime_data.get('stablecoin_mcap'):
+        stab_mcap = realtime_data.get('stablecoin_mcap')
+        if stab_mcap is not None and stab_mcap > 0:
             st.metric(
                 "全球穩定幣市值",
-                f"${realtime_data['stablecoin_mcap']:.2f}B",
-                "↑ 流動性充沛" if realtime_data['stablecoin_mcap'] > 100 else "流動性一般",
+                f"${stab_mcap:.2f}B",
+                "↑ 流動性充沛" if stab_mcap > 100 else "流動性一般",
             )
         else:
-            st.metric("全球穩定幣市值", "N/A", "連線失敗")
+            st.metric("全球穩定幣市值", "—", "連線中，稍候重整")
 
         m2_df = fetch_m2_series()
         if not m2_df.empty:
             m2_series = m2_df['m2_billions'].reindex(chart_df.index, method='ffill')
             st.line_chart(m2_series, height=120)
-            st.caption(f"美國 M2 貨幣供應量 (FRED WM2NS, 十億美元)")
+            st.caption("美國 M2 貨幣供應量 (FRED WM2NS, 十億美元)")
         else:
-            st.caption("M2 數據暫時無法取得")
+            st.caption("M2 數據暫時無法取得（FRED 連線失敗）")
 
         st.markdown("---")
         st.markdown("#### 🧠 宏觀數據")
@@ -301,9 +308,7 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
                     delta_color="inverse",
                 )
             else:
-                st.metric("🇯🇵 日圓匯率", "N/A", "數據暫時無法取得")
-            qt = get_quantum_threat_level()
-            st.metric("量子威脅等級", qt['level'], qt['status'])
+                st.metric("🇯🇵 日圓匯率", "—", "Yahoo/FRED 暫時無法取得")
         with m_col2:
             cpi = fetch_us_cpi_yoy()
             if cpi['yoy_pct'] is not None:
@@ -314,5 +319,22 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
                     delta_color="inverse",
                 )
             else:
-                st.metric("🇺🇸 美國 CPI (YoY)", "N/A", "數據暫時無法取得")
-            st.info("**技術敘事**:\n- 關注 OP_CAT 升級進度")
+                st.metric("🇺🇸 美國 CPI (YoY)", "—", "FRED 暫時無法取得")
+
+        # 量子威脅等級 — 獨立一行避免文字被截斷
+        qt = get_quantum_threat_level()
+        st.markdown("---")
+        qt_col1, qt_col2 = st.columns([1, 2])
+        with qt_col1:
+            st.metric(
+                "⚛️ 量子威脅等級",
+                qt['level'],
+                qt['status'],
+                help=f"{qt['desc']}\n\n預估威脅成熟: {qt['year_est']}"
+            )
+        with qt_col2:
+            st.caption(
+                f"📌 {qt['desc'].replace(chr(10), ' | ')}\n\n"
+                f"預估威脅成熟年份: {qt['year_est']} ｜ 評估基準: {qt['updated']}"
+            )
+        st.info("**技術敘事**:\n- 關注 OP_CAT 升級進度 | NIST PQC 標準已於 2024 正式發布")

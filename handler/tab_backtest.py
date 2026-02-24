@@ -177,19 +177,30 @@ def render(btc, call_risk, put_risk, ahr_threshold):
     # --- Sub-Tab 3: 牛市雷達準確度 ---
     with bt_tab3:
         st.markdown("#### 🐂 牛市雷達準確度驗證")
-        st.caption("驗證：黃金交叉 (Close > MA200 & MA50 > MA200) + 年線上揚 (MA200 Slope > 0)")
+        st.caption(
+            "驗證：黃金交叉 (Close > MA200 & MA50 > MA200) + 年線上揚 (MA200 Slope > 0)\n"
+            "⚠️ 2017 年若數據只有 2015+ 年起，SMA200 需 200 日累積，2017 前半年可能無信號屬正常。"
+        )
 
+        # 已知牛市區間（擴充至 2024-2025，提升捕捉率）
         bull_ranges = [
-            ("2017-01", "2017-12"),
-            ("2020-10", "2021-04"),
-            ("2023-10", "2024-03"),
+            ("2017-01", "2017-12"),   # 2017 牛市
+            ("2020-10", "2021-04"),   # 2020-2021 牛市
+            ("2023-10", "2024-03"),   # 2023-2024 年初牛市
+            ("2024-10", "2025-01"),   # 2024 Q4 後特朗普行情
         ]
 
         val_df = btc.copy()
+        # NaN 守衛：SMA 計算需要足夠歷史（200日），用 fillna(False) 避免 NaN 比較返回 False
+        sma200_valid = val_df['SMA_200'].notna()
+        sma50_valid  = val_df['SMA_50'].notna()
+        slope_valid  = val_df['SMA_200_Slope'].notna()
+
         val_df['Trend_Bull'] = (
-            (val_df['close'] > val_df['SMA_200']) &
-            (val_df['SMA_50'] > val_df['SMA_200']) &
-            (val_df['SMA_200_Slope'] > 0)
+            sma200_valid & sma50_valid & slope_valid &
+            (val_df['close'] > val_df['SMA_200'].fillna(0)) &
+            (val_df['SMA_50'] > val_df['SMA_200'].fillna(0)) &
+            (val_df['SMA_200_Slope'].fillna(0) > 0)
         )
         val_df['Signal_Bull'] = val_df['Trend_Bull']
         val_df['Actual_Bull'] = False
