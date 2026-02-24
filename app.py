@@ -86,7 +86,12 @@ with st.spinner("正在連線至戰情室數據庫..."):
     try:
         realtime_data = fetch_realtime_data()
     except Exception as e:
-        realtime_data = {k: None for k in ['price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield', 'fng_value', 'fng_class']}
+        # [Task 3] 新增 OI 相關欄位至 fallback dict，確保 tab_swing 不會 KeyError
+        realtime_data = {k: None for k in [
+            'price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield',
+            'fng_value', 'fng_class',
+            'open_interest', 'open_interest_usd', 'oi_change_pct',  # OI 欄位
+        ]}
         _data_warnings.append(f"即時數據載入失敗，使用模擬數據: {e}")
 
     curr = btc.iloc[-1]
@@ -162,7 +167,13 @@ with tab1:
     )
 
 with tab2:
-    tab2_handler.render(btc, curr, funding_rate, proxies, capital, risk_per_trade)
+    # [Task 3] 傳入 OI 數據供波段狙擊 Tab 顯示未平倉量變化 Metric
+    tab2_handler.render(
+        btc, curr, funding_rate, proxies, capital, risk_per_trade,
+        open_interest=realtime_data.get('open_interest'),
+        open_interest_usd=realtime_data.get('open_interest_usd'),
+        oi_change_pct=realtime_data.get('oi_change_pct'),
+    )
 
 with tab3:
     tab3_handler.render(btc, realtime_data)

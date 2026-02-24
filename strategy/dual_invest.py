@@ -21,8 +21,12 @@ import requests
 import urllib3          # [Task #1] SSL 警告靜默（與其他模組一致）
 from datetime import timedelta
 
-# [Task #1] 靜默 SSL 警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 從集中設定檔讀取環境參數與雙幣策略參數
+from config import SSL_VERIFY, DUAL_INVEST_COOLDOWN_DAYS
+
+# [Task #1] 動態 SSL：本地端關閉警告；雲端 SSL_VERIFY=True 不需要關閉
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # [Task #6] 動態無風險利率快取
@@ -47,7 +51,7 @@ def _fetch_aave_usdt_rate() -> float | None:
         resp = requests.get(
             "https://yields.llama.fi/pools",
             timeout=8,
-            verify=False  # [Task #1]
+            verify=SSL_VERIFY,  # [Task #1] 動態 SSL：本地 False / 雲端 True
         )
         if resp.status_code != 200:
             return None
@@ -81,7 +85,7 @@ def _fetch_makerdao_dsr() -> float | None:
         resp = requests.get(
             "https://yields.llama.fi/pools",
             timeout=8,
-            verify=False  # [Task #1]
+            verify=SSL_VERIFY,  # [Task #1] 動態 SSL：本地 False / 雲端 True
         )
         if resp.status_code != 200:
             return None
@@ -259,10 +263,30 @@ def get_current_suggestion(df, ma_short_col='EMA_20', ma_long_col='SMA_50', t_da
     }
 
 
-def run_dual_investment_backtest(df, call_risk=0.5, put_risk=0.5):
+def run_dual_investment_backtest(
+    df,
+    call_risk=0.5,
+    put_risk=0.5,
+    cooldown_days=DUAL_INVEST_COOLDOWN_DAYS,
+):
     """
     雙幣理財逐日滾倉回測
     以 BTC 計價，模擬每日選擇 SELL_HIGH 或 BUY_LOW
+
+    [Backtest Realism] 空窗期（Cooldown）模擬:
+    ─────────────────────────────────────────────────────────────────
+    cooldown_days: 結算後等待天數，才重新判定開單（預設 1 天）。
+
+    真實操作中，結算後需要：
+      1. 確認收到結算資產（鏈上確認 / 平台到帳）
+      2. 觀察市場情緒再決定下一單方向
+    直接在結算當天立即開下一單，會導致回測過度樂觀。
+
+    實作方式：
+      - 結算後記錄 cooldown_end_time = curr_time + timedelta(days=cooldown_days)
+      - 在 IDLE 狀態中，若 curr_time < cooldown_end_time 則跳過開單
+    ─────────────────────────────────────────────────────────────────
+
     返回: trade_log DataFrame
     """
     if df.empty:
@@ -280,15 +304,22 @@ def run_dual_investment_backtest(df, call_risk=0.5, put_risk=0.5):
     product_type = ""
     prev_start_time = None
 
+    # [Backtest Realism] 追蹤空窗期結束時間（結算後 cooldown_days 天內禁止開單）
+    # 初始化為 None，代表回測開始時無空窗限制
+    cooldown_end_time = None
+
     indices = daily.index
     for i in range(len(indices) - 1):
         curr_time = indices[i]
         curr_row = daily.loc[curr_time]
 
-        # 結算
+        # ── 結算邏輯 ──────────────────────────────────────────────────────
         if state == "LOCKED":
+            # 尚未到結算時間，繼續等待
             if curr_time < lock_end_time:
                 continue
+
+            # 到達結算日，計算收益與行權結果
             fixing = curr_row['close']
             vol = (curr_row['ATR'] / curr_row['close']) * np.sqrt(365 * 24) * 0.5
             duration = (lock_end_time - prev_start_time).days
@@ -325,14 +356,25 @@ def run_dual_investment_backtest(df, call_risk=0.5, put_risk=0.5):
                 "Strike": strike_price, "Asset": current_asset, "Balance": balance,
                 "Note": note, "Color": color, "Equity_BTC": equity_btc, "Step_Y": strike_price,
             })
+
+            # [Backtest Realism] 設定空窗期：結算當天起算，cooldown_days 天後才能開單
+            # 例如 cooldown_days=1：今天結算，明天才能開下一單
+            cooldown_end_time = curr_time + timedelta(days=cooldown_days)
             state = "IDLE"
 
-        # 開單
+        # ── 開單邏輯 ──────────────────────────────────────────────────────
         if state == "IDLE":
+            # [Backtest Realism] 空窗期濾網：若尚在冷卻期內則跳過開單
+            # 模擬真實操作中結算後需要觀察市場、確認到帳的等待行為
+            if cooldown_end_time is not None and curr_time < cooldown_end_time:
+                continue
+
             weekday = curr_time.weekday()
             if weekday >= 5:
+                # 週末流動性差，不開單
                 continue
-            duration = 3 if weekday == 4 else 1
+
+            duration = 3 if weekday == 4 else 1  # 週五開 3 天期（跨週末）
             next_settlement = curr_time + timedelta(days=duration)
             if next_settlement > daily.index[-1]:
                 continue

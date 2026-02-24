@@ -19,11 +19,15 @@ from datetime import datetime, timedelta
 import asyncio
 from dotenv import load_dotenv  # [Task #8] 從 .env 讀取環境變數
 
+# 從集中設定檔讀取 SSL 動態驗證旗標
+from config import SSL_VERIFY
+
 # [Task #8] 載入 .env 檔案（若不存在則靜默跳過）
 load_dotenv()
 
-# [Task #1] 關閉 SSL 不安全請求警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# [Task #1] 動態 SSL：本地開發環境才關閉警告；雲端 SSL_VERIFY=True 維持正常驗證
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # [Task #4] SQLite 資料庫路徑設定
 DATA_DIR = "data"
@@ -52,7 +56,7 @@ def _retry_request(url: str, params: dict = None, max_retries: int = 3,
     """
     for attempt in range(max_retries + 1):
         try:
-            resp = requests.get(url, params=params, timeout=timeout, verify=False)
+            resp = requests.get(url, params=params, timeout=timeout, verify=SSL_VERIFY)
             resp.raise_for_status()   # 非 2xx 狀態碼拋出例外
             return resp
         except requests.exceptions.Timeout:

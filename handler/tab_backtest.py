@@ -4,7 +4,13 @@ Tab 4: 時光機回測
 - 波段策略 PnL
 - 雙幣滾倉回測
 - 牛市雷達準確度驗證
+
+[Task 4b - UX] 新增 CSV 下載功能:
+  - 波段交易回測紀錄（trades_df）可下載為 .csv
+  - 雙幣滾倉回測日誌（trade_log）可下載為 .csv
+  使用 st.download_button，點擊即可在瀏覽器直接下載，無需後端儲存。
 """
+import io
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
@@ -13,6 +19,20 @@ from datetime import timedelta
 
 from strategy.swing import run_swing_strategy_backtest
 from strategy.dual_invest import run_dual_investment_backtest
+from config import DEFAULT_INITIAL_CAPITAL
+
+
+def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """
+    將 DataFrame 轉換為 UTF-8 BOM 編碼的 CSV bytes，供 st.download_button 使用。
+
+    使用 UTF-8-BOM（utf-8-sig）確保在 Windows Excel 開啟時中文不亂碼。
+    返回 bytes 物件，可直接傳入 st.download_button 的 data 參數。
+    """
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=True, encoding='utf-8-sig')
+    # encode 為 bytes（download_button 需要 bytes 或 str）
+    return buffer.getvalue().encode('utf-8-sig')
 
 
 def render(btc, call_risk, put_risk, ahr_threshold):
@@ -39,7 +59,11 @@ def render(btc, call_risk, put_risk, ahr_threshold):
             )
             end_d = st.date_input("結束日期", value=max_date,
                                   min_value=min_date, max_value=max_date)
-            init_cap = st.number_input("初始本金 (USDT)", value=10_000, step=1_000)
+            init_cap = st.number_input(
+                "初始本金 (USDT)",
+                value=int(DEFAULT_INITIAL_CAPITAL),
+                step=1_000,
+            )
             run_backtest = st.button("🚀 執行波段回測")
 
         with b_col2:
@@ -102,6 +126,18 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                             with st.expander("交易明細"):
                                 st.dataframe(trades)
 
+                            # [Task 4b] CSV 下載功能
+                            # _df_to_csv_bytes 轉換為 UTF-8-BOM，確保 Excel 開啟不亂碼
+                            csv_bytes = _df_to_csv_bytes(trades)
+                            st.download_button(
+                                label="⬇️ 下載波段交易紀錄 (.csv)",
+                                data=csv_bytes,
+                                # 檔名包含日期區間，方便管理多份回測結果
+                                file_name=f"swing_trades_{start_d}_{end_d}.csv",
+                                mime="text/csv",
+                                help="下載本次回測的完整交易明細，包含進出場日期、價格、PnL、手續費等欄位",
+                            )
+
     # --- Sub-Tab 2: 雙幣滾倉 ---
     with bt_tab2:
         st.markdown("#### 💰 雙幣理財長期滾倉回測")
@@ -125,6 +161,16 @@ def render(btc, call_risk, put_risk, ahr_threshold):
                     st.plotly_chart(fig2, width='stretch')
                     with st.expander("詳細交易日誌"):
                         st.dataframe(logs)
+
+                    # [Task 4b] CSV 下載功能
+                    csv_bytes_logs = _df_to_csv_bytes(logs)
+                    st.download_button(
+                        label="⬇️ 下載雙幣滾倉日誌 (.csv)",
+                        data=csv_bytes_logs,
+                        file_name="dual_invest_trade_log.csv",
+                        mime="text/csv",
+                        help="下載完整的雙幣理財滾倉交易日誌，包含每筆開單/結算的資產、餘額、行權價、備注等欄位",
+                    )
                 else:
                     st.warning("無交易紀錄")
 
