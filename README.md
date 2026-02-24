@@ -24,12 +24,22 @@
 app.py              入口點（組合各層，不含業務邏輯）
 config.py           集中設定（均線週期、交易成本、倉位風控參數）
 
+collector/
+  btc_price_collector.py  本地端 15m K 線收集器（Binance + Kraken 雙源）
+
+db/                 年度分割 SQLite 資料庫（本地收集後 push 至雲端）
+  btcusdt_15m_2013.db
+  btcusdt_15m_2014.db
+  ...
+  btcusdt_15m_2026.db
+
 core/
   indicators.py     技術指標 + AHR999 計算（純函數，無 Streamlit 依賴）
   bear_bottom.py    熊市底部 8 大指標評分引擎（向量化，20-50x 效能提升）
 
 service/
-  market_data.py    BTC / DXY 歷史數據（四層備援：Yahoo→Binance→Kraken→CryptoCompare）
+  local_db_reader.py  讀取本地 SQLite（15m 原始 / 重採樣日線）
+  market_data.py    BTC / DXY 歷史數據（五層備援：本地DB→Yahoo→Binance→Kraken→CryptoCompare）
   onchain.py        鏈上輔助數據（非同步 httpx 分頁，TVL/穩定幣/資金費率）
   realtime.py       即時報價（SSL 繞過 + 指數退避重試）
   macro_data.py     宏觀數據（FRED M2/CPI、Yahoo 日圓、量子威脅靜態評估）
@@ -122,7 +132,8 @@ tests/
 
 | 類別 | 來源 | 說明 |
 |------|------|------|
-| BTC 歷史 OHLCV | Yahoo Finance → Binance → Kraken → **CryptoCompare** | 四層備援，覆蓋 2015 年起完整歷史 |
+| BTC 15m K 線 | **本地 SQLite DB** (0th) | 由 collector 預先收集並 push 至 repo，Streamlit 直接讀取 |
+| BTC 歷史 OHLCV | Yahoo Finance → Binance → Kraken → **CryptoCompare** | 四層備援（無本地 DB 時啟用），覆蓋 2015 年起完整歷史 |
 | 即時價格 | Binance WebSocket | 含資金費率、OI 未平倉量 |
 | 鏈上 TVL | DeFiLlama API | Bitcoin DeFi 生態鎖倉量 |
 | 穩定幣市值 | DeFiLlama API | 全球穩定幣流通量 |
@@ -144,6 +155,58 @@ streamlit run app.py
 
 ---
 
+## 歷史數據收集器
+
+Streamlit Cloud 因 IP 封鎖、速率限制等原因有時無法取得完整歷史數據。
+**解法：在本地端一次性收集，commit push 到 GitHub，雲端直接讀取 repo 內的 SQLite 檔案。**
+
+### 收集 BTC/USDT 15m K 線
+
+```bash
+# 首次執行：從 2013 年起全量下載（Kraken 2013-2017 + Binance 2017-今）
+python collector/btc_price_collector.py --push
+
+# 日常增量更新（只抓最新數據）
+python collector/btc_price_collector.py --push
+
+# 只更新特定年份
+python collector/btc_price_collector.py --year 2021 --push
+
+# 從指定年份開始（例如只補 Binance 上線後的數據）
+python collector/btc_price_collector.py --from-year 2017 --push
+```
+
+### 數據源分工
+
+| 時期 | 來源 | 說明 |
+|------|------|------|
+| 2013 – 2017-08-16 | Kraken（XBTUSD 15m） | 無地理封鎖，有 2013 年起完整歷史 |
+| 2017-08-17 – 今 | Binance（BTCUSDT 15m） | 流動性最高，最可靠的 15m 數據 |
+
+### 儲存結構
+
+```
+db/
+  btcusdt_15m_2013.db   ← 每年約 1.5–3 MB
+  btcusdt_15m_2014.db
+  ...
+  btcusdt_15m_2026.db   ← 當年持續更新
+```
+
+每次執行後 `--push` 自動 commit 並推送，Streamlit Cloud 在下次重啟時讀取最新數據。
+
+### 五層備援優先序
+
+```
+0th  本地 SQLite DB   ← 有 db/*.db 時直接讀，毫秒級，不呼叫任何 API
+1st  Yahoo Finance    ← 一般日線來源
+2nd  Binance REST     ← 部分 Cloud IP 受 451 封鎖
+3rd  Kraken           ← 無地理封鎖
+4th  CryptoCompare    ← 覆蓋 2010 年起完整歷史
+```
+
+---
+
 ## Streamlit 防休眠設定
 
 Streamlit Community Cloud 在 **7 天無流量**後自動休眠。本專案使用 GitHub Actions 每日兩次自動 Ping 保持喚醒。
@@ -159,6 +222,13 @@ Streamlit Community Cloud 在 **7 天無流量**後自動休眠。本專案使�
 ---
 
 ## 版本紀錄
+
+### v1.7 (2026-02-24)
+
+- **feat(collector): 本地端 BTC/USDT 15m K 線收集器** — `collector/btc_price_collector.py`，Binance（2017+）+ Kraken（2013–2017）雙源，年度分割 SQLite，增量更新，`--push` 自動 git commit & push
+- **feat(db): 多年度 SQLite 年度分割架構** — `db/btcusdt_15m_{year}.db`，WAL 模式，open_time 主鍵去重，repo 直接託管（每年約 1.5–3 MB）
+- **feat(service): local_db_reader.py** — `read_btc_15m()` / `read_btc_daily()` / `get_coverage_info()`，供 Streamlit 直接讀取本地 DB
+- **feat(market_data): 第零層備援（本地 DB）** — `fetch_market_data()` 優先讀取 `db/*.db`，無本地 DB 時才呼叫外部 API，徹底解決 Streamlit Cloud 抓不到 2015 年起完整歷史的問題
 
 ### v1.6 (2026-02-24)
 
