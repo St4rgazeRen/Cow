@@ -118,6 +118,9 @@ def calculate_bear_bottom_score(row):
     批量歷史計算請改用 score_series(df) 以避免 N+1 效能問題
 
     返回: (score: int, signals: dict)
+
+    [Fix] 無論指標值是否 NaN，均寫入 signals 字典（NaN 顯示為 '—'），
+    確保 UI 卡片恆顯示全部 8 個指標格，不因數據不足而遺漏。
     """
     score = 0
     signals = {}
@@ -138,6 +141,9 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 高估 (>1.2)"
         score += s
         signals['AHR999'] = {'value': f"{ahr:.3f}", 'score': s, 'max': 20, 'label': label}
+    else:
+        # NaN: SMA200 歷史不足（< 200日），仍顯示指標卡
+        signals['AHR999'] = {'value': '—', 'score': 0, 'max': 20, 'label': "⚪ 數據累積中 (需200日)"}
 
     # 2. MVRV Z-Score Proxy (最高 18 分)
     mvrv = row.get('MVRV_Z_Proxy')
@@ -152,6 +158,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 高估/頂部 (>2)"
         score += s
         signals['MVRV_Z_Proxy'] = {'value': f"{mvrv:.2f}", 'score': s, 'max': 18, 'label': label}
+    else:
+        signals['MVRV_Z_Proxy'] = {'value': '—', 'score': 0, 'max': 18, 'label': "⚪ 數據累積中 (需200日)"}
 
     # 3. Pi Cycle Gap (最高 15 分)
     pi_gap = row.get('PiCycle_Gap')
@@ -166,6 +174,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 遠離Pi週期底部"
         score += s
         signals['Pi_Cycle'] = {'value': f"{pi_gap:.1f}%", 'score': s, 'max': 15, 'label': label}
+    else:
+        signals['Pi_Cycle'] = {'value': '—', 'score': 0, 'max': 15, 'label': "⚪ 數據累積中 (需350日)"}
 
     # 4. 200-Week SMA Ratio (最高 15 分)
     sma200w = row.get('SMA200W_Ratio')
@@ -182,6 +192,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴🔴 極度高估 (>4x)"
         score += s
         signals['SMA_200W'] = {'value': f"{sma200w:.2f}x", 'score': s, 'max': 15, 'label': label}
+    else:
+        signals['SMA_200W'] = {'value': '—', 'score': 0, 'max': 15, 'label': "⚪ 數據累積中 (需1400日)"}
 
     # 5. Puell Multiple Proxy (最高 12 分)
     puell = row.get('Puell_Proxy')
@@ -196,6 +208,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 礦工獲利豐厚/暴利"
         score += s
         signals['Puell_Multiple'] = {'value': f"{puell:.2f}", 'score': s, 'max': 12, 'label': label}
+    else:
+        signals['Puell_Multiple'] = {'value': '—', 'score': 0, 'max': 12, 'label': "⚪ 數據累積中 (需365日)"}
 
     # 6. Monthly RSI (最高 10 分)
     rsi_m = row.get('RSI_Monthly')
@@ -210,6 +224,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 月線強勢"
         score += s
         signals['RSI_Monthly'] = {'value': f"{rsi_m:.1f}", 'score': s, 'max': 10, 'label': label}
+    else:
+        signals['RSI_Monthly'] = {'value': '—', 'score': 0, 'max': 10, 'label': "⚪ 數據累積中 (需月頻RSI)"}
 
     # 7. Power Law Ratio (最高 5 分)
     pl_ratio = row.get('PowerLaw_Ratio')
@@ -224,6 +240,8 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 遠高於冪律支撐"
         score += s
         signals['PowerLaw'] = {'value': f"{pl_ratio:.1f}x", 'score': s, 'max': 5, 'label': label}
+    else:
+        signals['PowerLaw'] = {'value': '—', 'score': 0, 'max': 5, 'label': "⚪ 數據累積中"}
 
     # 8. Mayer Multiple (最高 5 分)
     mayer = row.get('Mayer_Multiple')
@@ -238,5 +256,7 @@ def calculate_bear_bottom_score(row):
             s, label = 0, "🔴 高於2年均線"
         score += s
         signals['Mayer_Multiple'] = {'value': f"{mayer:.2f}x", 'score': s, 'max': 5, 'label': label}
+    else:
+        signals['Mayer_Multiple'] = {'value': '—', 'score': 0, 'max': 5, 'label': "⚪ 數據累積中 (需730日)"}
 
     return score, signals

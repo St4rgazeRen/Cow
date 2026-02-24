@@ -1,7 +1,14 @@
 """
 strategy/swing.py
-Antigravity v4 波段交易策略 & 回測引擎
+Antigravity v4 波段交易策略 & 回測引擎（五合一進場過濾）
 純 Python，無 Streamlit 依賴
+
+五合一進場條件（v4.1 升級）:
+  1. Price > SMA200          — 年線多頭，大趨勢向上
+  2. RSI_14 > 50             — 短期動能偏多
+  3. 0% ≤ dist_EMA20 ≤ 1.5% — 回踩甜蜜點，不追高
+  4. MACD > Signal           — MACD 多頭交叉確認動能
+  5. ADX > 20                — 趨勢強度足夠，過濾盤整假訊號
 
 [Task #5] 回測引擎向量化:
 原始邏輯使用 for i in range(len(bt_df)) 逐行掃描，在 2000+ 天的資料集下
@@ -39,9 +46,10 @@ def run_swing_strategy_backtest(
     slippage_rate=DEFAULT_SLIPPAGE_RATE,
 ):
     """
-    Antigravity v4 波段策略回測
+    Antigravity v4 波段策略回測（五合一進場過濾）
 
     進場: Price > SMA200 AND RSI_14 > 50 AND 0% ≤ dist_from_EMA20 ≤ 1.5%
+          AND MACD > Signal AND ADX > 20
     出場: Price < EMA_20
 
     [Backtest Realism] 交易摩擦成本:
@@ -102,8 +110,23 @@ def run_swing_strategy_backtest(
     dist_pct = (close / ema_safe - 1) * 100  # 正值 = 高於 EMA20
 
     # 進場條件（全部向量化，一次計算整個 Series）
+    # 條件 1+2: 年線多頭 + RSI 動能偏多
     bull_trend = (close > bt_df['SMA_200']) & (bt_df['RSI_14'] > 50)
-    is_entry   = bull_trend & (dist_pct >= 0.0) & (dist_pct <= 1.5)
+
+    # 條件 4: MACD > Signal（多頭動能交叉確認）
+    # 若欄位不存在（資料不足），退化為全 True（忽略此條件）
+    if 'MACD_12_26_9' in bt_df.columns and 'MACDs_12_26_9' in bt_df.columns:
+        macd_bull = (bt_df['MACD_12_26_9'] > bt_df['MACDs_12_26_9']).fillna(False)
+    else:
+        macd_bull = pd.Series(True, index=bt_df.index)
+
+    # 條件 5: ADX > 20（市場有趨勢，過濾橫盤假訊號）
+    if 'ADX' in bt_df.columns:
+        adx_trending = (bt_df['ADX'] > 20).fillna(False)
+    else:
+        adx_trending = pd.Series(True, index=bt_df.index)
+
+    is_entry   = bull_trend & (dist_pct >= 0.0) & (dist_pct <= 1.5) & macd_bull & adx_trending
 
     # 出場條件
     is_exit    = close < ema_safe

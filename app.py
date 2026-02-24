@@ -62,7 +62,7 @@ with st.spinner("正在連線至戰情室數據庫..."):
         _data_warnings.append(f"市場數據載入異常: {e}")
 
     if btc.empty:
-        st.error("❌ 無法取得 BTC 歷史數據（三層備援 Yahoo / Binance / Kraken 均失敗）。")
+        st.error("❌ 無法取得 BTC 歷史數據（四層備援 Yahoo / Binance / Kraken / CryptoCompare 均失敗）。")
         st.info("💡 可能原因：網路不通、所有 API 暫時限速。請等待 5 分鐘後重新整理頁面（快取 TTL 為 300 秒）。")
         st.stop()
 

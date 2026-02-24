@@ -37,9 +37,20 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
     # 取最近 90 天數據，圖表不宜過長
     df = btc.tail(90).copy()
 
-    # 判斷進場甜蜜點：0% ≤ dist_from_EMA20 ≤ 1.5% 且趨勢多頭
+    # 判斷進場甜蜜點（五合一過濾）
     dist_pct = (df['close'] / df['EMA_20'] - 1) * 100
-    entry_zone = (df['close'] > df['SMA_200']) & (df['RSI_14'] > 50) & (dist_pct >= 0) & (dist_pct <= 1.5)
+    macd_cond = (
+        (df['MACD_12_26_9'] > df['MACDs_12_26_9']).fillna(False)
+        if ('MACD_12_26_9' in df.columns and 'MACDs_12_26_9' in df.columns)
+        else pd.Series(True, index=df.index)
+    )
+    adx_cond = (df['ADX'] > 20).fillna(False) if 'ADX' in df.columns else pd.Series(True, index=df.index)
+    entry_zone = (
+        (df['close'] > df['SMA_200']) &
+        (df['RSI_14'] > 50) &
+        (dist_pct >= 0) & (dist_pct <= 1.5) &
+        macd_cond & adx_cond
+    )
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
@@ -195,11 +206,24 @@ def render(btc, curr, funding_rate, proxies, capital, risk_per_trade,
     bull_rsi       = curr.get('RSI_Weekly', 50) > 50
     not_overheated = funding_rate < 0.05
 
-    # 基礎濾網指標（3 列）
-    f_col1, f_col2, f_col3 = st.columns(3)
-    f_col1.markdown(f"**價格 > MA200**: {'✅ 通過' if bull_ma else '❌ 未通過'}")
-    f_col2.markdown(f"**週線 RSI > 50**: {'✅ 通過' if bull_rsi else '❌ 未通過'}")
-    f_col3.markdown(f"**資金費率 < 0.05%**: {'✅ 通過' if not_overheated else '⚠️ 過熱'}")
+    # 新增: MACD 多頭確認
+    macd_val   = curr.get('MACD_12_26_9') or curr.get('MACD', 0)
+    macd_sig   = curr.get('MACDs_12_26_9') or curr.get('MACD_Signal', 0)
+    bull_macd  = (macd_val is not None and macd_sig is not None
+                  and macd_val == macd_val and macd_sig == macd_sig  # NaN guard
+                  and float(macd_val) > float(macd_sig))
+
+    # 新增: ADX 趨勢強度
+    adx_val      = curr.get('ADX', 0) or 0
+    adx_trending = float(adx_val) > 20
+
+    # 五合一濾網（5 列）
+    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns(5)
+    f_col1.markdown(f"**① Price > MA200**\n{'✅ 通過' if bull_ma else '❌ 未通過'}")
+    f_col2.markdown(f"**② 週RSI > 50**\n{'✅ 通過' if bull_rsi else '❌ 未通過'}")
+    f_col3.markdown(f"**③ MACD > Signal**\n{'✅ 通過' if bull_macd else '❌ 未通過'}")
+    f_col4.markdown(f"**④ ADX > 20** ({adx_val:.1f})\n{'✅ 通過' if adx_trending else '❌ 盤整'}")
+    f_col5.markdown(f"**⑤ 費率 < 0.05%**\n{'✅ 通過' if not_overheated else '⚠️ 過熱'}")
 
     # ── [Task 3] 未平倉量 (Open Interest) 顯示區塊 ──
     # OI 是衡量趨勢延續性的重要衍生品指標：
@@ -254,7 +278,7 @@ def render(btc, curr, funding_rate, proxies, capital, risk_per_trade,
         # OI 抓取失敗（如網路問題或 API 限制），顯示降級提示
         st.caption("⚠️ 未平倉量數據暫不可用（Binance Futures API 連線異常）")
 
-    can_long = bull_ma and bull_rsi and not_overheated
+    can_long = bull_ma and bull_rsi and bull_macd and adx_trending and not_overheated
     if can_long:
         st.success("🎯 策略狀態: **允許做多 (LONG ALLOWED)**")
     else:

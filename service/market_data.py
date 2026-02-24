@@ -6,6 +6,7 @@ service/market_data.py
   1st: Yahoo Finance (yfinance)
   2nd: Binance (ccxt) — 部分 Streamlit Cloud IP 被 451 封鎖
   3rd: Kraken 公開 API — 無地理限制，適合 Streamlit Cloud
+  4th: CryptoCompare 公開 API — 有 2010 年起完整 BTC 日線歷史，分頁抓取
 """
 import os
 import time
@@ -157,6 +158,88 @@ def fetch_kraken_daily(start_date_str):
 
     return df
 
+def fetch_cryptocompare_daily(start_date_str):
+    """
+    第四備援：從 CryptoCompare 公開 API 抓取 BTC/USD 日線歷史。
+    - 無需 API Key，免費端點
+    - 有自 2010 年起的完整比特幣日線數據，可覆蓋 2015 年以前的歷史
+    - 每次最多 2000 筆，分頁倒序抓取（toTs 往前推）
+
+    分頁策略:
+      CryptoCompare histoday 以「結束時間戳」為錨點向前抓取 limit 筆
+      → 先抓到現在，再往前推直到 start_date_str 前的時間
+    """
+    url = "https://min-api.cryptocompare.com/data/v2/histoday"
+    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
+    now_ts = int(datetime.now().timestamp())
+
+    all_rows = []
+    to_ts = now_ts  # 從當前時間往前翻頁
+
+    for _ in range(20):  # 最多 20 頁 × 2000 = 40,000 天，足以覆蓋 BTC 全歷史
+        try:
+            resp = requests.get(
+                url,
+                params={
+                    "fsym": "BTC",
+                    "tsym": "USD",
+                    "limit": 2000,
+                    "toTs": to_ts,
+                },
+                timeout=20,
+                verify=SSL_VERIFY,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("Response") != "Success":
+                print(f"[CryptoCompare] API 返回錯誤: {data.get('Message', '未知')}")
+                break
+
+            rows = data.get("Data", {}).get("Data", [])
+            if not rows:
+                break
+
+            # 過濾掉 time=0 或 close=0 的無效行
+            valid = [r for r in rows if r.get("time", 0) > 0 and r.get("close", 0) > 0]
+            all_rows.extend(valid)
+
+            # 最早一筆時間戳
+            earliest_ts = min(r["time"] for r in valid)
+            if earliest_ts <= start_ts:
+                break  # 已覆蓋目標起始日期，不再繼續
+
+            # 往更早翻頁（減 1 天避免重複）
+            to_ts = earliest_ts - 86_400
+            time.sleep(0.3)
+
+        except Exception as e:
+            print(f"[CryptoCompare] 分頁請求失敗: {e}")
+            break
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df["date"] = pd.to_datetime(df["time"], unit="s")
+    df.set_index("date", inplace=True)
+    # 只保留 OHLCV 欄位，並轉為 float
+    df = df[["open", "high", "low", "close", "volumeto"]].copy()
+    df.rename(columns={"volumeto": "volume"}, inplace=True)
+    df = df.astype(float)
+
+    # 過濾到 start_date_str 之後的數據
+    df = df[df.index >= pd.Timestamp(start_date_str)]
+    df = df[~df.index.duplicated(keep="last")]
+    df.sort_index(inplace=True)
+
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    return df
+
+
 @st.cache_data(ttl=300)
 def fetch_market_data():
     """
@@ -188,8 +271,10 @@ def fetch_market_data():
     if last_date and last_date < today:
         start_fetch_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
     elif not last_date:
-        # 儘量抓取最長歷史（Yahoo Finance BTC 數據最早到 2014-09，Binance 從 2017-08 起）
-        start_fetch_date = "2014-09-01"
+        # 目標：抓取 2015-01-01 起的完整歷史
+        # Yahoo Finance BTC 最早 ~2014-09，Binance 從 2017-08，Kraken 有限
+        # CryptoCompare 第四備援可覆蓋 2015 前資料
+        start_fetch_date = "2015-01-01"
 
     # 若有需要更新的日期，開始抓取（三層備援）
     if start_fetch_date:
@@ -221,9 +306,18 @@ def fetch_market_data():
             try:
                 btc_new = fetch_kraken_daily(start_fetch_date)
                 if not btc_new.empty:
-                    st.success(f"✅ Kraken 備援成功，取得 {len(btc_new)} 筆數據")
+                    st.info(f"ℹ️ Kraken 備援成功，取得 {len(btc_new)} 筆數據")
             except Exception as e:
-                st.error(f"❌ 所有備援 API 均失敗。Kraken 錯誤: {type(e).__name__}: {e}")
+                st.warning(f"⚠️ Kraken 備援失敗 ({type(e).__name__})，切換第四備援 CryptoCompare...")
+
+        # --- 第四層：CryptoCompare（有 2010 年起完整 BTC 歷史，最強歷史覆蓋）---
+        if btc_new.empty:
+            try:
+                btc_new = fetch_cryptocompare_daily(start_fetch_date)
+                if not btc_new.empty:
+                    st.success(f"✅ CryptoCompare 備援成功，取得 {len(btc_new)} 筆 (自 {btc_new.index[0].date()})")
+            except Exception as e:
+                st.error(f"❌ 所有備援 API 均失敗。CryptoCompare 錯誤: {type(e).__name__}: {e}")
 
     # 3. 合併並存檔
     if not btc_new.empty:
@@ -237,6 +331,7 @@ def fetch_market_data():
         btc_final = local_df
 
     if btc_final.empty:
+        st.error("❌ 四層備援均失敗（Yahoo / Binance / Kraken / CryptoCompare）。請稍後重試。")
         return pd.DataFrame(), pd.DataFrame()
 
     # 4. DXY (美元指數)
