@@ -43,24 +43,52 @@ def fetch_binance_daily(start_date_str):
     """
     第二備援：當 Yahoo Finance 失敗時，改從 Binance 抓取 BTC/USDT 日線數據。
     注意：Binance 對部分 Streamlit Cloud IP 返回 451（地理封鎖）。
-    使用專案既有的 ccxt 套件來獲取。
+
+    [Fix Issue 6] 加入分頁迴圈（Pagination Loop）:
+    原始版本只抓 1000 筆（約 2.7 年），無法覆蓋完整歷史。
+    修正後無限迴圈直到資料用盡，每批 1000 根日線 K 棒，自動分頁。
+    Binance 限速：每分鐘 1200 次請求，每批加入 0.1s 延遲。
     """
     exchange = ccxt.binance()
-    # 將字串日期轉換為毫秒時間戳
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
 
-    # ccxt 回傳格式: [timestamp, open, high, low, close, volume]
-    ohlcv = exchange.fetch_ohlcv('BTC/USDT', timeframe='1d', since=start_ts, limit=1000)
+    all_ohlcv = []
+    since     = start_ts
+    now_ts    = int(datetime.now().timestamp() * 1000)
 
-    if not ohlcv:
+    while since < now_ts:
+        try:
+            # ccxt 回傳格式: [timestamp_ms, open, high, low, close, volume]
+            batch = exchange.fetch_ohlcv(
+                "BTC/USDT", timeframe="1d", since=since, limit=1000
+            )
+        except Exception as e:
+            print(f"[Binance] fetch_ohlcv 失敗 (since={since}): {e}")
+            break
+
+        if not batch:
+            break  # 無更多資料，結束
+
+        all_ohlcv.extend(batch)
+
+        # 不足 1000 筆：代表已到最新資料，不需要再請求
+        if len(batch) < 1000:
+            break
+
+        # 下一頁從最後一根 K 棒的下一天開始（+1 天 = +86,400,000 ms）
+        since = batch[-1][0] + 86_400_000
+        time.sleep(0.1)  # 遵守 Binance API 速率限制
+
+    if not all_ohlcv:
         return pd.DataFrame()
 
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('date', inplace=True)
-    df.drop(columns=['timestamp'], inplace=True)
+    df = pd.DataFrame(all_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    # 去除可能的重複時間戳（分頁邊界）
+    df = df.drop_duplicates(subset="timestamp", keep="last")
+    df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("date", inplace=True)
+    df.drop(columns=["timestamp"], inplace=True)
 
-    # 確保 index 格式與 yfinance 一致 (移除時區資訊)
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
@@ -160,7 +188,8 @@ def fetch_market_data():
     if last_date and last_date < today:
         start_fetch_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
     elif not last_date:
-        start_fetch_date = "2017-01-01"
+        # 儘量抓取最長歷史（Yahoo Finance BTC 數據最早到 2014-09，Binance 從 2017-08 起）
+        start_fetch_date = "2014-09-01"
 
     # 若有需要更新的日期，開始抓取（三層備援）
     if start_fetch_date:
