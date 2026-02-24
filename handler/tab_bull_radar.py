@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-from service.mock import get_mock_global_m2_series
+from service.macro_data import fetch_m2_series, fetch_usdjpy, fetch_us_cpi_yoy, get_quantum_threat_level
 
 
 def _make_chart_cache_key(chart_df, tvl_hist, stable_hist, fund_hist) -> str:
@@ -280,16 +280,39 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
         else:
             st.metric("全球穩定幣市值", "N/A", "連線失敗")
 
-        m2_series = get_mock_global_m2_series(btc).reindex(chart_df.index)
-        st.line_chart(m2_series, height=120)
-        st.caption("全球 M2 流動性趨勢 (模擬)")
+        m2_df = fetch_m2_series()
+        if not m2_df.empty:
+            m2_series = m2_df['m2_billions'].reindex(chart_df.index, method='ffill')
+            st.line_chart(m2_series, height=120)
+            st.caption(f"美國 M2 貨幣供應量 (FRED WM2NS, 十億美元)")
+        else:
+            st.caption("M2 數據暫時無法取得")
 
         st.markdown("---")
-        st.markdown("#### 🧠 人工判讀區")
+        st.markdown("#### 🧠 宏觀數據")
         m_col1, m_col2 = st.columns(2)
         with m_col1:
-            st.text_input("🇯🇵 日圓匯率 (JPY)", placeholder="例: 155.5", key="macro_jpy")
-            st.metric("量子威脅等級", "Low (Current)")
+            jpy = fetch_usdjpy()
+            if jpy['rate'] is not None:
+                st.metric(
+                    f"🇯🇵 日圓匯率 ({jpy['source']})",
+                    f"¥{jpy['rate']:.2f}",
+                    f"{jpy['change_pct']:+.2f}% {jpy['trend']}",
+                    delta_color="inverse",
+                )
+            else:
+                st.metric("🇯🇵 日圓匯率", "N/A", "數據暫時無法取得")
+            qt = get_quantum_threat_level()
+            st.metric("量子威脅等級", qt['level'], qt['status'])
         with m_col2:
-            st.text_input("🇺🇸 美國 CPI (YoY)", placeholder="例: 3.4%", key="macro_cpi")
+            cpi = fetch_us_cpi_yoy()
+            if cpi['yoy_pct'] is not None:
+                st.metric(
+                    f"🇺🇸 美國 CPI YoY ({cpi['latest_date']})",
+                    f"{cpi['yoy_pct']:.1f}%",
+                    cpi['trend'],
+                    delta_color="inverse",
+                )
+            else:
+                st.metric("🇺🇸 美國 CPI (YoY)", "N/A", "數據暫時無法取得")
             st.info("**技術敘事**:\n- 關注 OP_CAT 升級進度")
