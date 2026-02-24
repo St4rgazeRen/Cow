@@ -201,17 +201,16 @@ def get_quantum_threat_level() -> dict:
     # 2026 年評估: Level 1 (Very Low)
     # 現有最佳量子電腦距破解 Bitcoin 仍有 3-4 個數量級的差距
     return {
-        "level":     "極低 (Very Low)",
+        "level":     "極低",          # 縮短文字避免 st.metric 截斷
         "level_num": 1,
         "color":     "#00ff88",
-        "status":    "🟢 目前無威脅",
+        "status":    "🟢 目前無威脅 (Level 1/5)",
         "desc": (
-            "Google Willow (2024): 105 物理量子位元 | "
-            "IBM Heron r2: 156 位元\n"
-            "破解 Bitcoin secp256k1 需要 ~400 萬容錯實體位元\n"
-            "NIST PQC 標準已於 2024 發布，比特幣社群積極追蹤升級路徑"
+            "Google Willow: 105 物理量子位元｜IBM Heron r2: 156 位元\n"
+            "破解 secp256k1 需 ~400 萬容錯實體位元，差距 4 個數量級\n"
+            "NIST PQC 標準已於 2024 正式發布 (ML-KEM / ML-DSA)"
         ),
-        "year_est": "2035-2045+（樂觀估計）",
+        "year_est": "2035–2045+",
         "ref_url":  "https://csrc.nist.gov/projects/post-quantum-cryptography",
         "updated":  "2026-Q1 靜態評估",
     }

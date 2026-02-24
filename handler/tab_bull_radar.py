@@ -321,20 +321,16 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist, curr, dxy,
             else:
                 st.metric("🇺🇸 美國 CPI (YoY)", "—", "FRED 暫時無法取得")
 
-        # 量子威脅等級 — 獨立一行避免文字被截斷
+        # 量子威脅等級 — 獨立行，左 metric 右說明
         qt = get_quantum_threat_level()
         st.markdown("---")
-        qt_col1, qt_col2 = st.columns([1, 2])
-        with qt_col1:
-            st.metric(
-                "⚛️ 量子威脅等級",
-                qt['level'],
-                qt['status'],
-                help=f"{qt['desc']}\n\n預估威脅成熟: {qt['year_est']}"
-            )
-        with qt_col2:
-            st.caption(
-                f"📌 {qt['desc'].replace(chr(10), ' | ')}\n\n"
-                f"預估威脅成熟年份: {qt['year_est']} ｜ 評估基準: {qt['updated']}"
-            )
-        st.info("**技術敘事**:\n- 關注 OP_CAT 升級進度 | NIST PQC 標準已於 2024 正式發布")
+        st.metric(
+            "⚛️ 量子威脅等級",
+            qt['level'],
+            qt['status'],
+            help=f"{qt['desc']}\n\n預估威脅成熟: {qt['year_est']} ｜ {qt['updated']}",
+        )
+        st.caption(
+            f"距破解 secp256k1 差距約 4 個數量級 ｜ 預估威脅成熟: {qt['year_est']} ｜ "
+            f"NIST PQC 2024 已發布 ｜ 關注 OP_CAT 升級"
+        )
