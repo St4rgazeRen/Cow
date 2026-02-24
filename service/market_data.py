@@ -3,6 +3,7 @@ service/market_data.py
 市場數據服務 — BTC 歷史 OHLCV + DXY
 增量更新：本地 CSV 緩存，只下載缺失日期
 加入 SSL 繞過機制與多層備援 API:
+  0th: 本地 SQLite DB（db/btcusdt_15m_*.db，由 collector 預先收集）— 最優先、最可靠
   1st: Yahoo Finance (yfinance)
   2nd: Binance REST API（直接 HTTP，不依賴 ccxt）— 部分 Streamlit Cloud IP 被 451 封鎖
   3rd: Kraken 公開 API — 無地理限制，適合 Streamlit Cloud
@@ -19,6 +20,9 @@ import urllib3
 
 # 從集中設定檔讀取 SSL 動態驗證旗標
 from config import SSL_VERIFY
+
+# 本地 SQLite DB 讀取（由 collector/btc_price_collector.py 生成）
+from service.local_db_reader import has_local_data, read_btc_daily
 
 # 動態 SSL：本地開發環境才關閉警告；雲端 SSL_VERIFY=True 維持正常驗證
 if not SSL_VERIFY:
@@ -300,18 +304,29 @@ def fetch_market_data():
     _fetch_log = []  # 收集備援過程記錄，最後由 app.py 統一決定是否顯示
 
     if start_fetch_date:
+        # --- 第零層：本地 SQLite DB（collector 預先收集的 15m 資料重採樣為日線）---
+        if has_local_data():
+            try:
+                btc_new = read_btc_daily(start_date=start_fetch_date)
+                if not btc_new.empty:
+                    print(f"[Market] 本地 DB 成功，取得 {len(btc_new)} 筆日線（從 15m 重採樣）")
+            except Exception as e:
+                print(f"[Market] 本地 DB 讀取失敗 ({type(e).__name__})，切換 Yahoo Finance")
+                btc_new = pd.DataFrame()
+
         # --- 第一層：Yahoo Finance ---
-        try:
-            btc_new = yf.download("BTC-USD", start=start_fetch_date, interval="1d", progress=False, session=session)
-            if not btc_new.empty:
-                # 處理 yfinance 可能回傳 MultiIndex columns 的問題
-                btc_new.columns = [
-                    c[0].lower() if isinstance(c, tuple) else c.lower()
-                    for c in btc_new.columns
-                ]
-                print(f"[Market] Yahoo Finance 成功，取得 {len(btc_new)} 筆")
-        except Exception as e:
-            print(f"[Market] Yahoo Finance 失敗 ({type(e).__name__})，切換 Binance REST")
+        if btc_new.empty:
+            try:
+                btc_new = yf.download("BTC-USD", start=start_fetch_date, interval="1d", progress=False, session=session)
+                if not btc_new.empty:
+                    # 處理 yfinance 可能回傳 MultiIndex columns 的問題
+                    btc_new.columns = [
+                        c[0].lower() if isinstance(c, tuple) else c.lower()
+                        for c in btc_new.columns
+                    ]
+                    print(f"[Market] Yahoo Finance 成功，取得 {len(btc_new)} 筆")
+            except Exception as e:
+                print(f"[Market] Yahoo Finance 失敗 ({type(e).__name__})，切換 Binance REST")
 
         # --- 第二層：Binance REST API（直接 HTTP，不使用 ccxt）---
         if btc_new.empty:
@@ -354,7 +369,7 @@ def fetch_market_data():
         btc_final = local_df
 
     if btc_final.empty:
-        print("[Market] ❌ 四層備援均失敗（Yahoo / Binance / Kraken / CryptoCompare）")
+        print("[Market] ❌ 五層備援均失敗（本地DB / Yahoo / Binance / Kraken / CryptoCompare）")
         return pd.DataFrame(), pd.DataFrame()
 
     # 4. DXY (美元指數)
