@@ -17,8 +17,12 @@ from datetime import datetime
 
 import data_manager
 
-# [Task #1] 關閉全域 InsecureRequestWarning，避免每個 requests 呼叫都噴警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 從集中設定檔讀取 SSL 動態驗證旗標
+from config import SSL_VERIFY
+
+# [Task #1] 動態 SSL：本地開發環境才關閉警告
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 @st.cache_data(ttl=3600)
@@ -61,7 +65,7 @@ def _fetch_stablecoin_history():
         r = requests.get(
             "https://stablecoins.llama.fi/stablecoincharts/all",
             timeout=10,
-            verify=False
+            verify=SSL_VERIFY,  # 動態 SSL：本地 False / 雲端 True
         )
         if r.status_code != 200:
             return pd.DataFrame()
@@ -130,7 +134,7 @@ async def _fetch_funding_rate_async() -> pd.DataFrame:
     all_rates = []
 
     # [Task #2] 建立非同步 HTTP 客戶端，verify=False 繞過企業 SSL
-    async with httpx.AsyncClient(verify=False) as client:
+    async with httpx.AsyncClient(verify=SSL_VERIFY) as client:
         # 並行發送所有分頁請求，等待全部完成
         tasks = [_fetch_funding_page_async(client, s) for s in page_starts]
         pages = await asyncio.gather(*tasks, return_exceptions=True)

@@ -155,7 +155,16 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
     return fig
 
 
-def render(btc, curr, funding_rate, proxies, capital, risk_per_trade):
+def render(btc, curr, funding_rate, proxies, capital, risk_per_trade,
+           open_interest=None, open_interest_usd=None, oi_change_pct=None):
+    """
+    波段狙擊 Tab 渲染入口
+
+    參數說明（新增 OI 相關）:
+      open_interest     : BTC 永續合約未平倉量（顆數），來自 fetch_realtime_data()
+      open_interest_usd : 未平倉量美元市值（億 USD）
+      oi_change_pct     : 近 60 秒 OI 變化率（%），正=建倉，負=平倉
+    """
     st.markdown("### 🌊 Antigravity v4 核心策略引擎")
 
     # ──────────────────────────────────────────────────────────────
@@ -181,15 +190,69 @@ def render(btc, curr, funding_rate, proxies, capital, risk_per_trade):
     # A. 趨勢濾網 (Trend Filter)
     # ──────────────────────────────────────────────────────────────
     st.subheader("A. 趨勢濾網 (Trend Filter)")
-    f_col1, f_col2, f_col3 = st.columns(3)
 
     bull_ma        = curr['close'] > curr['SMA_200']
     bull_rsi       = curr.get('RSI_Weekly', 50) > 50
     not_overheated = funding_rate < 0.05
 
+    # 基礎濾網指標（3 列）
+    f_col1, f_col2, f_col3 = st.columns(3)
     f_col1.markdown(f"**價格 > MA200**: {'✅ 通過' if bull_ma else '❌ 未通過'}")
     f_col2.markdown(f"**週線 RSI > 50**: {'✅ 通過' if bull_rsi else '❌ 未通過'}")
     f_col3.markdown(f"**資金費率 < 0.05%**: {'✅ 通過' if not_overheated else '⚠️ 過熱'}")
+
+    # ── [Task 3] 未平倉量 (Open Interest) 顯示區塊 ──
+    # OI 是衡量趨勢延續性的重要衍生品指標：
+    #   OI ↑ + 價格 ↑ → 多頭持續建倉，趨勢強勁
+    #   OI ↑ + 價格 ↓ → 空頭建倉，可能加速下跌
+    #   OI ↓          → 平倉去槓桿，趨勢動能減弱
+    if open_interest is not None:
+        st.markdown("##### 📊 BTC 永續合約未平倉量 (Open Interest)")
+        oi_col1, oi_col2, oi_col3 = st.columns(3)
+
+        # Metric 1: OI 總量（BTC 顆數）
+        oi_col1.metric(
+            label="未平倉量 (OI)",
+            value=f"{open_interest:,.0f} BTC",
+            help="幣安 BTC/USDT 永續合約當前未平倉合約總量（以 BTC 計）",
+        )
+
+        # Metric 2: OI 美元市值（億 USD）
+        if open_interest_usd is not None:
+            oi_col2.metric(
+                label="OI 市值",
+                value=f"${open_interest_usd:.2f} 億",
+                help="未平倉量以美元計算（顆數 × 現價 ÷ 1億）",
+            )
+
+        # Metric 3: OI 60 秒變化率，正負色顯示
+        if oi_change_pct is not None:
+            # 判斷 OI 趨勢的語義標籤
+            if oi_change_pct > 0.5:
+                oi_trend = "建倉增加 ↑"
+            elif oi_change_pct < -0.5:
+                oi_trend = "平倉減少 ↓"
+            else:
+                oi_trend = "橫盤震盪 →"
+
+            oi_col3.metric(
+                label="OI 60s 變化",
+                value=f"{oi_change_pct:+.3f}%",
+                delta=oi_trend,
+                # delta_color: OI 增加（建倉）視為正面信號（綠色），減少為警示（紅色）
+                delta_color="normal" if oi_change_pct >= 0 else "inverse",
+                help="與上次快取（約60秒前）相比的 OI 變化率。正值=市場建倉，負值=去槓桿平倉",
+            )
+        else:
+            # OI 變化率尚無前次數據（第一次載入），顯示提示
+            oi_col3.metric(
+                label="OI 60s 變化",
+                value="等待下次刷新",
+                help="第一次載入無法計算變化率，刷新後即可顯示",
+            )
+    else:
+        # OI 抓取失敗（如網路問題或 API 限制），顯示降級提示
+        st.caption("⚠️ 未平倉量數據暫不可用（Binance Futures API 連線異常）")
 
     can_long = bull_ma and bull_rsi and not_overheated
     if can_long:

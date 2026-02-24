@@ -17,19 +17,23 @@ import requests
 import urllib3
 import ccxt
 
-# 關閉 urllib3 的 SSL 憑證驗證警告 (為配合公司內網防火牆設定)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 從集中設定檔讀取 SSL 動態驗證旗標
+from config import SSL_VERIFY
+
+# 動態 SSL：本地開發環境才關閉警告；雲端 SSL_VERIFY=True 維持正常驗證
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BTC_CSV = "BTC_HISTORY.csv"
 
 def get_yf_session():
     """
     建立自訂的 requests Session 供 yfinance 使用。
-    1. verify=False: 關閉 SSL 驗證，繞過公司網路阻擋。
+    1. verify=SSL_VERIFY: 動態 SSL 驗證（本地 False，雲端 True）。
     2. 加入 User-Agent: 降低在 Streamlit Cloud 上被 Yahoo 視為機器人阻擋的機率。
     """
     session = requests.Session()
-    session.verify = False
+    session.verify = SSL_VERIFY  # 動態 SSL：本地 False / 雲端 True
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
@@ -82,7 +86,7 @@ def fetch_kraken_daily(start_date_str):
                 url,
                 params={'pair': 'XBTUSD', 'interval': 1440, 'since': since},
                 timeout=15,
-                verify=False,
+                verify=SSL_VERIFY,
             )
             resp.raise_for_status()
             data = resp.json()

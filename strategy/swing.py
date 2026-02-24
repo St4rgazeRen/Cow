@@ -17,6 +17,9 @@ import math
 import numpy as np
 import pandas as pd
 
+# 從集中設定檔讀取預設交易成本參數
+from config import DEFAULT_FEE_RATE, DEFAULT_SLIPPAGE_RATE
+
 
 def calculate_max_drawdown(equity_curve):
     """計算最大回撤 (%)"""
@@ -27,12 +30,35 @@ def calculate_max_drawdown(equity_curve):
     return drawdowns.min() * 100
 
 
-def run_swing_strategy_backtest(df, start_date, end_date, initial_capital=10_000):
+def run_swing_strategy_backtest(
+    df,
+    start_date,
+    end_date,
+    initial_capital=10_000,
+    fee_rate=DEFAULT_FEE_RATE,
+    slippage_rate=DEFAULT_SLIPPAGE_RATE,
+):
     """
     Antigravity v4 波段策略回測
 
     進場: Price > SMA200 AND RSI_14 > 50 AND 0% ≤ dist_from_EMA20 ≤ 1.5%
     出場: Price < EMA_20
+
+    [Backtest Realism] 交易摩擦成本:
+    ─────────────────────────────────────────────────────────────────
+    fee_rate      : 單邊手續費率（如 0.001 = 0.1%，Taker Fee）
+    slippage_rate : 滑點估算（如 0.001 = 0.1%，因市場深度不足的成交偏差）
+
+    實際進場成本:
+        effective_entry = price * (1 + fee_rate + slippage_rate)
+        → 例如：BTC=$100,000，cost=0.2%，實際成本=$100,200
+
+    實際出場收益:
+        effective_exit = price * (1 - fee_rate - slippage_rate)
+        → 例如：BTC=$110,000，cost=0.2%，實際收益=$109,780
+
+    合計一來一回摩擦成本 ≈ 0.4%（0.2% 進 + 0.2% 出）
+    ─────────────────────────────────────────────────────────────────
 
     [Task #5] 向量化重構說明:
     ─────────────────────────────────────────────────────────────────
@@ -104,28 +130,55 @@ def run_swing_strategy_backtest(df, start_date, end_date, initial_capital=10_000
         date  = dates[i]
 
         if state == "CASH" and entry_mask[i]:
-            # ── 進場 ──
-            position    = balance / price
-            entry_price = price
+            # ── 進場（含手續費與滑點摩擦成本）──
+            # 進場時：實際成交價 = 市場價 × (1 + 手續費率 + 滑點率)
+            # 例如：BTC=$100,000，fee+slip=0.2% → 實際花費每幣 $100,200
+            friction_in  = fee_rate + slippage_rate
+            effective_entry_price = price * (1.0 + friction_in)
+
+            # 以調整後成本計算可購入的幣量（balance 全倉投入）
+            position    = balance / effective_entry_price
+            entry_price = effective_entry_price  # 記錄含成本的進場均價
+
             trades.append({
-                "Type": "Buy", "Date": date, "Price": entry_price,
-                "Balance": balance, "Crypto": position, "Reason": "Sweet Spot"
+                "Type":       "Buy",
+                "Date":       date,
+                "Price":      price,               # 市場價（顯示用）
+                "Entry_Cost": effective_entry_price,  # 實際成本（含摩擦）
+                "Fee%":       friction_in * 100,   # 進場摩擦成本 %
+                "Balance":    balance,
+                "Crypto":     position,
+                "Reason":     "Sweet Spot",
             })
             balance = 0.0
             state   = "INVESTED"
 
         elif state == "INVESTED" and exit_mask[i]:
-            # ── 出場 ──
-            balance = position * price
+            # ── 出場（含手續費與滑點摩擦成本）──
+            # 出場時：實際成交價 = 市場價 × (1 - 手續費率 - 滑點率)
+            # 例如：BTC=$110,000，fee+slip=0.2% → 實際收到每幣 $109,780
+            friction_out  = fee_rate + slippage_rate
+            effective_exit_price  = price * (1.0 - friction_out)
+
+            # 實際收到的總資金 = 幣量 × 含摩擦出場價
+            balance = position * effective_exit_price
+
+            # PnL 以「含成本進場價」與「含成本出場價」計算，才能反映真實獲利
+            gross_cost = entry_price * position         # 進場總花費（含摩擦）
+            net_pnl    = balance - gross_cost            # 實際淨盈虧（USDT）
+            net_pnl_pct = (effective_exit_price / entry_price - 1) * 100  # 淨報酬率
+
             trades.append({
-                "Type":    "Sell",
-                "Date":    date,
-                "Price":   price,
-                "Balance": balance,
-                "Crypto":  0.0,
-                "Reason":  "Trend Break (<EMA20)",
-                "PnL":     balance - (entry_price * position),
-                "PnL%":    (price / entry_price - 1) * 100,
+                "Type":       "Sell",
+                "Date":       date,
+                "Price":      price,                # 市場價（顯示用）
+                "Exit_Net":   effective_exit_price, # 實際收到（含摩擦）
+                "Fee%":       friction_out * 100,   # 出場摩擦成本 %
+                "Balance":    balance,
+                "Crypto":     0.0,
+                "Reason":     "Trend Break (<EMA20)",
+                "PnL":        net_pnl,              # 淨盈虧（已扣摩擦成本）
+                "PnL%":       net_pnl_pct,          # 淨報酬率（已扣摩擦成本）
             })
             position = 0.0
             state    = "CASH"
