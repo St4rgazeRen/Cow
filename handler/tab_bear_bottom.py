@@ -191,7 +191,7 @@ def _render_forecast_chart(btc: pd.DataFrame, fc: dict):
     # 中位數目標線
     fig.add_shape(
         type="line",
-        x0=str(today.date()), x1=str(est_date.date()),
+        x0=today, x1=est_date,
         y0=fc["target_median"], y1=fc["target_median"],
         line=dict(color=median_color, width=2.5, dash="dash"),
     )
@@ -213,7 +213,7 @@ def _render_forecast_chart(btc: pd.DataFrame, fc: dict):
     ]:
         fig.add_shape(
             type="line",
-            x0=str(today.date()), x1=str(est_date.date()),
+            x0=today, x1=est_date,
             y0=val, y1=val,
             line=dict(color=clr, width=1.2, dash="dot"),
         )
@@ -224,12 +224,20 @@ def _render_forecast_chart(btc: pd.DataFrame, fc: dict):
             font=dict(color=clr, size=10),
         )
 
-    # 今日垂直線
-    fig.add_vline(
-        x=str(today.date()),
+    # 今日垂直線（add_vline 不支援字串 x，改用 add_shape）
+    fig.add_shape(
+        type="line",
+        x0=today, x1=today,
+        y0=0, y1=1,
+        xref="x", yref="paper",
         line=dict(color="#888888", width=1, dash="dash"),
-        annotation_text="今日",
-        annotation_font_color="#888888",
+    )
+    fig.add_annotation(
+        x=today, y=1.02,
+        xref="x", yref="paper",
+        text="今日",
+        showarrow=False,
+        font=dict(color="#888888", size=10),
     )
 
     fig.update_layout(
