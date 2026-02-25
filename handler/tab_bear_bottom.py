@@ -1,6 +1,22 @@
 """
-handler/tab_bear_bottom.py
+handler/tab_bear_bottom.py  ·  v1.3
 Tab 5: 熊市底部獵人 (Bear Bottom Hunter)
+
+版次記錄:
+  v1.0  初版，整合原有 A–E + 新增 Section F 四季預測
+  v1.1  修正 add_vline / add_shape 字串日期 TypeError
+  v1.2  F1 橫幅改顯示「時間季節（刪除線）→ 有效季節（高亮）」；
+        新增校正 st.warning() 警告框；
+        _render_season_timeline() 支援 effective_season 參數高亮實際色塊；
+        F5 策略卡片改用有效季節高亮
+  v1.3  [本次] 修正以下問題：
+        ① F2 目標價卡片標籤改為「最深目標↓ / 中位數 / 最淺目標↑」消除熊市語意歧義
+        ② F2 補充 ATH 計算基準 hint（顯示 ath_ref 值）
+        ③ F3 加入「冪律走廊說明」expander（來源、公式、與目標價區間的區別）
+        ④ F4 表格標題加說明（✅完成 / 🔄進行中 說明）
+        ⑤ _render_cycle_waterfall()：第4週期改顯示已知 ATH 倍數（1.70x，已達），
+           不再使用漸消遞減模型預測值（8.7x），並標注「進行中」
+        ⑥ 預測邏輯說明 expander：補充當前週期 ATH、三檔目標百分位說明
 
 [Task #7] Session State 圖表快取:
 tab_bear_bottom 有兩個特別昂貴的操作：
@@ -264,24 +280,36 @@ def _render_forecast_chart(btc: pd.DataFrame, fc: dict):
 
 def _render_cycle_waterfall(fc: dict):
     """
-    瀑布圖：展示各週期牛市倍數遞減趨勢，並標出當前週期預測值。
+    瀑布圖：展示各週期牛市倍數遞減趨勢。
+    [v1.3] 第4週期：
+      - 若 is_complete=False，顯示已知 ATH 倍數（實際發生值），標注「進行中」
+      - 不再用漸消遞減模型預測（那是未知的），改顯示已知事實
     """
-    labels = [f"第{i+1}週期\n({c['halving'].year})" for i, c in enumerate(CYCLE_HISTORY)]
-    values = [c["peak_mult"] for c in CYCLE_HISTORY]
-
-    # 加上當前預測
     from core.season_forecast import _apply_diminishing_returns, STATS
-    curr_idx = fc["current_cycle_idx"]
-    pred_mult = _apply_diminishing_returns(STATS["peak_mult_median"], curr_idx)
-    labels.append(f"第{curr_idx+1}週期\n({HALVING_DATES[curr_idx].year}) 預測")
-    values.append(pred_mult)
 
-    colors = ["#ff9800", "#ff9800", "#ff9800", "#42a5f5"]
+    labels = []
+    values = []
+    colors = []
+    bar_texts = []
+
+    for i, c in enumerate(CYCLE_HISTORY):
+        yr = c["halving"].year
+        if c["is_complete"]:
+            labels.append(f"第{i+1}週期\n({yr})")
+            values.append(c["peak_mult"])
+            colors.append("#ff9800")
+            bar_texts.append(f"{c['peak_mult']:.1f}x")
+        else:
+            # 第4週期：顯示已知的 ATH 倍數，標注「進行中」
+            labels.append(f"第{i+1}週期\n({yr}) 進行中")
+            values.append(c["peak_mult"])   # 已知的 ATH/減半價 = 1.70x
+            colors.append("#42a5f5")
+            bar_texts.append(f"{c['peak_mult']:.2f}x ✓\n(ATH已達)")
 
     fig = go.Figure(go.Bar(
         x=labels, y=values,
         marker_color=colors,
-        text=[f"{v:.1f}x" for v in values],
+        text=bar_texts,
         textposition="outside",
     ))
     fig.add_trace(go.Scatter(
@@ -297,6 +325,14 @@ def _render_cycle_waterfall(fc: dict):
         yaxis_title="倍數 (x)",
         paper_bgcolor="#0e1117",
         showlegend=False,
+        annotations=[dict(
+            text="🔵 進行中 = ATH倍數已確認，熊市底部尚未完成",
+            xref="paper", yref="paper",
+            x=0, y=-0.15,
+            showarrow=False,
+            font=dict(size=10, color="#42a5f5"),
+            align="left",
+        )],
     )
     return fig
 
@@ -669,14 +705,28 @@ def render(btc):
         target_color = "#ffeb3b" if is_bull else "#42a5f5"
         conf_bar     = fc["confidence"]
 
+        # 標籤（v1.3）：
+        # 牛市：左=漲幅較小(25th)  中=中位數  右=漲幅較大(75th)
+        # 熊市：左=跌幅最深(p25)   中=中位數  右=跌幅最淺(p75)
+        lbl_low  = fc.get("bear_label_low",  "25th 百分位")
+        lbl_high = fc.get("bear_label_high", "75th 百分位")
+
+        # 熊市補充說明：ATH 計算基準
+        ath_ref_hint = ""
+        if not is_bull and fc.get("ath_ref"):
+            ath_ref_hint = f"<div style='color:#666;font-size:0.7rem;margin-top:2px;'>基準ATH: ${fc['ath_ref']:,.0f}</div>"
+
         col_a, col_b, col_c = st.columns(3)
         with col_a:
+            # 熊市：最深跌幅（最低價）；牛市：最小漲幅
+            side_title = "最深目標 ↓" if not is_bull else "保守目標 ↑"
             st.markdown(
                 f"""
                 <div style="background:#1e2a1e;border:1px solid {target_color};border-radius:10px;padding:18px;text-align:center;">
-                    <div style="color:#888;font-size:0.8rem;">保守目標</div>
+                    <div style="color:#888;font-size:0.8rem;">{side_title}</div>
                     <div style="color:{target_color};font-size:1.6rem;font-weight:700;">${fc['target_low']:,.0f}</div>
-                    <div style="color:#666;font-size:0.75rem;">25th 百分位</div>
+                    <div style="color:#666;font-size:0.75rem;">{lbl_low}</div>
+                    {ath_ref_hint}
                 </div>
                 """, unsafe_allow_html=True,
             )
@@ -690,16 +740,20 @@ def render(btc):
                     <div style="color:#666;font-size:0.75rem;margin-top:4px;">
                         預計達標: {fc['estimated_date'].strftime('%Y-%m-%d')}
                     </div>
+                    {ath_ref_hint}
                 </div>
                 """, unsafe_allow_html=True,
             )
         with col_c:
+            # 熊市：最淺跌幅（底部最高）；牛市：最大漲幅
+            side_title = "最淺目標 ↑" if not is_bull else "樂觀目標 ↑"
             st.markdown(
                 f"""
                 <div style="background:#1e2a1e;border:1px solid {target_color};border-radius:10px;padding:18px;text-align:center;">
-                    <div style="color:#888;font-size:0.8rem;">樂觀目標</div>
+                    <div style="color:#888;font-size:0.8rem;">{side_title}</div>
                     <div style="color:{target_color};font-size:1.6rem;font-weight:700;">${fc['target_high']:,.0f}</div>
-                    <div style="color:#666;font-size:0.75rem;">75th 百分位</div>
+                    <div style="color:#666;font-size:0.75rem;">{lbl_high}</div>
+                    {ath_ref_hint}
                 </div>
                 """, unsafe_allow_html=True,
             )
@@ -728,18 +782,42 @@ def render(btc):
         # 預測邏輯說明
         with st.expander("📖 預測邏輯說明", expanded=False):
             st.info(fc["rationale"])
+            ath_ref_line = f"- 熊市計算基準 ATH: **${fc['ath_ref']:,.0f}**" if fc.get("ath_ref") else ""
             st.markdown(f"""
             **關鍵參考數據:**
             - 減半時 BTC 價格: **${fc['halving_price']:,.0f}**
-            - 前一牛市 ATH: **${fc['prev_ath']:,.0f}** {"（熊市目標參考基礎）" if not is_bull else ""}
-            - 當前季節: **{si['season_zh']}**（月 {si['month_in_cycle']}）
+            - 當前週期已知最高ATH: **${fc['market_state'].get('cycle_ath', 0):,.0f}**
+            {ath_ref_line}
+            - 當前有效季節: **{eff['season_zh']}**（時間月份: {si['month_in_cycle']}）
             - 預計達標時間: **{fc['estimated_date'].strftime('%Y年%m月%d日')}**
+            
+            **三檔目標說明（熊市）:**
+            - 最深目標：歷史上跌幅最嚴重時 (p25)，ATH 跌約 87%
+            - 中位數：歷史平均跌幅 (p50)，ATH 跌約 84%
+            - 最淺目標：歷史上跌幅最輕微時 (p75)，ATH 跌約 78%
             """)
 
         st.markdown("---")
 
         # ── F3. 預測走勢圖 ────────────────────────────────────────
         st.markdown("#### F3. 目標價走勢圖（過去2年 + 未來12個月）")
+        with st.expander("📐 圖表說明：冪律走廊是什麼？", expanded=False):
+            st.markdown("""
+            **🟡 冪律走廊（Power Law Corridor）**
+            - 公式：`Price = 10^(-17.01467 + 5.84 × log10(天數))`，天數從 2009-01-03 起算
+            - 來源：Giovanni Santostasi 比特幣冪律理論，與 CoinGlass 等平台一致
+            - 中線 = 長期公允價值估算；上下通道 ± 0.45 含蓋歷史 95%+ 日線收盤
+            - ⚠️ **重要**：冪律模型是長期趨勢，**不代表短期會到達該價位**
+              - 熊市中價格可能大幅低於冪律公允價值（如 2022 年跌至通道下緣）
+              - 圖中顯示的藍色「目標價區間」才是本工具的短期預測目標
+            
+            **🔵 目標價區間（藍/黃水平帶）**
+            - 從今日水平延伸到「預計達標日期」的水平區帶
+            - 代表歷史同期（相同週期月份）達到底部/高點的價格區間
+            - **不是**說價格會直線走到該位置，而是該區間為歷史上可能出現底部/高點的範圍
+            
+            **白線** = BTC 過去 2 年歷史收盤價
+            """)
 
         ss_fc_key = f"tab_bb_fig_fc_{cache_key}"
         if (st.session_state.get(ss_hash_key) == cache_key
@@ -756,6 +834,7 @@ def render(btc):
 
         # ── F4. 歷史週期比較表 ────────────────────────────────────
         st.markdown("#### F4. 歷史減半週期比較")
+        st.caption("✅ = 完整週期（牛熊均已完成） ｜ 🔄 = 進行中（第4週期ATH已確認，熊市底部尚未完成）")
 
         col_tbl, col_bar = st.columns([1.3, 1])
         with col_tbl:
