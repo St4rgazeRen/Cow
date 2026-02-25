@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime
 
 import pandas as pd
+import streamlit as st
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 # 同時支援從 repo 根目錄或子目錄呼叫
@@ -84,6 +85,7 @@ def has_local_data() -> bool:
     return len(get_available_years()) > 0
 
 
+@st.cache_data(ttl=86400)
 def read_btc_15m(start_date: str = "2017-01-01", end_date: str = None) -> pd.DataFrame:
     """
     讀取本地 BTC/USDT 15m K 線，合併多個年度資料庫。
@@ -124,6 +126,7 @@ def read_btc_15m(start_date: str = "2017-01-01", end_date: str = None) -> pd.Dat
     return result
 
 
+@st.cache_data(ttl=86400)
 def read_btc_daily(start_date: str = "2015-01-01") -> pd.DataFrame:
     """
     將本地 15m 數據重採樣為日線 OHLCV。

@@ -260,3 +260,117 @@ def calculate_bear_bottom_score(row):
         signals['Mayer_Multiple'] = {'value': '—', 'score': 0, 'max': 5, 'label': "⚪ 數據累積中 (需730日)"}
 
     return score, signals
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 市場多空評分 (-100 到 +100)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calculate_market_cycle_score(row) -> int:
+    """
+    市場多空複合評分 (-100 到 +100)
+
+    架構：
+      - 空方評分 (bear)：0-100，熊底信號越多分數越高
+      - 多方評分 (bull)：0-100，牛頂超熱信號越多分數越高
+      - 最終分數 = bull - bear，clip 至 [-100, +100]
+
+    刻度語意：
+      -100 = 極度深熊 / 歷史大底（全部底部指標共振）
+        0  = 市場中性過渡區
+      +100 = 狂熱牛頂（全部頂部指標共振）
+    """
+    def _safe(v):
+        return v if (v is not None and not (isinstance(v, float) and math.isnan(v))) else 0.0
+
+    # ── 空方評分（底部指標）─────────────────────────────────────────────────
+    bear = 0
+
+    ahr = _safe(row.get('AHR999'))
+    if ahr > 0:
+        if ahr < 0.45:   bear += 20
+        elif ahr < 0.8:  bear += 13
+        elif ahr < 1.2:  bear += 5
+
+    mvrv = _safe(row.get('MVRV_Z_Proxy'))
+    if mvrv < -1.0:   bear += 18
+    elif mvrv < 0:    bear += 12
+    elif mvrv < 2.0:  bear += 4
+
+    pi_gap = _safe(row.get('PiCycle_Gap'))
+    if pi_gap < -10:  bear += 15
+    elif pi_gap < -3: bear += 10
+    elif pi_gap < 5:  bear += 4
+
+    sma200w = _safe(row.get('SMA200W_Ratio'))
+    if sma200w > 0:
+        if sma200w < 1.0:    bear += 15
+        elif sma200w < 1.3:  bear += 11
+        elif sma200w < 2.0:  bear += 5
+
+    puell = _safe(row.get('Puell_Proxy'))
+    if puell > 0:
+        if puell < 0.5:   bear += 12
+        elif puell < 0.8: bear += 8
+        elif puell < 1.5: bear += 3
+
+    rsi_m = _safe(row.get('RSI_Monthly'))
+    if rsi_m > 0:
+        if rsi_m < 30:    bear += 10
+        elif rsi_m < 40:  bear += 7
+        elif rsi_m < 55:  bear += 2
+
+    pl_ratio = _safe(row.get('PowerLaw_Ratio'))
+    if pl_ratio > 0:
+        if pl_ratio < 2.0:   bear += 5
+        elif pl_ratio < 5.0: bear += 3
+
+    mayer = _safe(row.get('Mayer_Multiple'))
+    if mayer > 0:
+        if mayer < 0.8:   bear += 5
+        elif mayer < 1.0: bear += 3
+
+    # ── 多方評分（頂部超熱鏡像指標）─────────────────────────────────────────
+    bull = 0
+
+    if ahr > 0:
+        if ahr >= 2.0:    bull += 20
+        elif ahr >= 1.5:  bull += 13
+        elif ahr >= 1.2:  bull += 5
+
+    if mvrv >= 5.0:    bull += 18
+    elif mvrv >= 3.5:  bull += 12
+    elif mvrv >= 2.0:  bull += 4
+
+    if pi_gap >= 15:   bull += 15
+    elif pi_gap >= 10: bull += 10
+    elif pi_gap >= 5:  bull += 4
+
+    if sma200w > 0:
+        if sma200w >= 5.0:    bull += 15
+        elif sma200w >= 4.0:  bull += 11
+        elif sma200w >= 3.0:  bull += 5
+        elif sma200w >= 2.0:  bull += 1
+
+    if puell > 0:
+        if puell >= 4.0:   bull += 12
+        elif puell >= 2.0: bull += 8
+        elif puell >= 1.5: bull += 3
+
+    if rsi_m > 0:
+        if rsi_m >= 75:   bull += 10
+        elif rsi_m >= 65: bull += 7
+        elif rsi_m >= 55: bull += 2
+
+    if pl_ratio > 0:
+        if pl_ratio >= 15:  bull += 5
+        elif pl_ratio >= 10: bull += 3
+        elif pl_ratio >= 7:  bull += 1
+
+    if mayer > 0:
+        if mayer >= 2.4:   bull += 5
+        elif mayer >= 2.0: bull += 3
+        elif mayer >= 1.5: bull += 1
+
+    raw = bull - bear
+    return max(-100, min(100, int(raw)))

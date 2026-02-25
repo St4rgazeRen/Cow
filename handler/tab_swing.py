@@ -166,7 +166,8 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
     return fig
 
 
-def render(btc, curr, funding_rate, proxies, capital, risk_per_trade,
+def render(btc, curr, funding_rate, proxies,
+           capital=None, risk_per_trade=None,
            open_interest=None, open_interest_usd=None, oi_change_pct=None):
     """
     波段狙擊 Tab 渲染入口
@@ -350,6 +351,21 @@ def render(btc, curr, funding_rate, proxies, capital, risk_per_trade,
     # D. 倉位計算機 (Risk Calculator)
     # ──────────────────────────────────────────────────────────────
     st.subheader("D. 倉位計算機 (Risk Calculator)")
+
+    # 資金與風險參數（從 sidebar 移至 Tab 內部，每個 Tab 獨立設定）
+    d_cap_col, d_risk_col = st.columns(2)
+    with d_cap_col:
+        capital = st.number_input(
+            "總本金 (USDT)", value=int(capital) if capital else 10_000, step=1_000,
+            help="倉位計算用的總資金（僅在此 Tab 內有效）",
+        )
+    with d_risk_col:
+        risk_per_trade = st.number_input(
+            "單筆風險 (%)", value=float(risk_per_trade) if risk_per_trade else 2.0,
+            step=0.1, max_value=10.0,
+            help="每筆交易最多承受佔總資金的百分比",
+        )
+
     entry_price  = st.number_input("預計進場價格 (預設現價)", value=float(curr['close']))
     manual_stop  = st.number_input("止損價格 (預設系統建議)", value=float(stop_price))
 

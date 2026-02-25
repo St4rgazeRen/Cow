@@ -1,6 +1,11 @@
 """
 handler/layout.py
 頁面設定、全局 CSS、側邊欄
+
+v2.0 重構：
+  - 側邊欄精簡化，只保留「日期區間設定」與全域資訊
+  - 移除各 Tab 專屬參數（capital / risk_per_trade / call_risk / put_risk / ahr_threshold）
+    → 這些參數已移至各自 Tab 內部設定
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -36,6 +41,15 @@ CUSTOM_CSS = """
         background-color: #262730;
         border-bottom: 2px solid #00ff88;
     }
+
+    /* Overview metric row */
+    .overview-metric {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid #2a2a4a;
+        border-radius: 10px;
+        padding: 14px 18px;
+        text-align: center;
+    }
 </style>
 """
 
@@ -53,49 +67,37 @@ def setup_page():
 
 def render_sidebar():
     """
-    渲染側邊欄控制面板
-    返回: dict，包含所有使用者輸入參數
+    渲染側邊欄控制面板（精簡版 v2.0）
+
+    只保留：
+      1. 圖表日期區間（全域共用）
+      2. 關於與免責聲明
+
+    各策略專屬參數（capital, risk, call_risk, put_risk, ahr_threshold）
+    已移至對應 Tab 內部，不在此設定。
+
+    返回: dict，僅包含 c_start, c_end
     """
     with st.sidebar:
         st.header("⚙️ 戰情室設定")
-        capital = st.number_input("總本金 (USDT)", value=10_000, step=1_000)
-        risk_per_trade = st.number_input(
-            "單筆風險 (%)", value=2.0, step=0.1, max_value=10.0
-        )
 
-        st.markdown("---")
-        st.caption("雙幣理財偏好設定")
-        call_risk = st.number_input(
-            "Sell High 風險係數", value=0.5, step=0.1, help="越大掛越遠 (保守)"
-        )
-        put_risk = st.number_input(
-            "Buy Low 風險係數", value=0.5, step=0.1, help="越大掛越遠 (保守)"
-        )
-
-        st.markdown("---")
-        st.caption("回測參數 (Tab 4 & 5)")
-        ahr_threshold = st.slider("AHR999 抄底閾值", 0.3, 1.5, 0.45, 0.05)
-
-        st.markdown("---")
-        with st.expander("📊 圖表設定", expanded=True):
+        with st.expander("📊 圖表日期區間", expanded=True):
             default_start = datetime.now() - timedelta(days=365)
             c_start = st.date_input("起始日期", value=default_start)
-            c_end = st.date_input("結束日期", value=datetime.now())
+            c_end   = st.date_input("結束日期",  value=datetime.now())
 
         st.markdown("---")
         st.markdown("### 關於與免責聲明")
         st.info("""
         **Antigravity v4 Engine**
+
         本工具僅供輔助分析，不構成投資建議。
         加密貨幣市場波動劇烈，請做好風險管理。
+
+        各 Tab 內可分別設定對應策略參數。
         """)
 
     return {
-        "capital": capital,
-        "risk_per_trade": risk_per_trade,
-        "call_risk": call_risk,
-        "put_risk": put_risk,
-        "ahr_threshold": ahr_threshold,
         "c_start": c_start,
-        "c_end": c_end,
+        "c_end":   c_end,
     }
