@@ -44,6 +44,10 @@ def run_swing_strategy_backtest(
     initial_capital=10_000,
     fee_rate=DEFAULT_FEE_RATE,
     slippage_rate=DEFAULT_SLIPPAGE_RATE,
+    entry_dist_min_pct: float = None,
+    entry_dist_max_pct: float = None,
+    rsi_min: int = None,
+    adx_min: int = None,
 ):
     """
     Antigravity v4 波段策略回測（五合一進場過濾）
@@ -97,6 +101,12 @@ def run_swing_strategy_backtest(
     if bt_df.empty:
         return pd.DataFrame(), 0.0, 0.0, 0, 0.0, {}
 
+    # 套用自訂參數（若未提供則使用 config 預設值）
+    _dist_min = entry_dist_min_pct if entry_dist_min_pct is not None else ENTRY_DIST_MIN_PCT
+    _dist_max = entry_dist_max_pct if entry_dist_max_pct is not None else ENTRY_DIST_MAX_PCT
+    _rsi_min  = rsi_min  if rsi_min  is not None else EXIT_RSI_MIN
+    _adx_min  = adx_min  if adx_min  is not None else 20
+
     # ──────────────────────────────────────────────────────────────
     # 第一段：向量化計算所有訊號（無 Python for loop）
     # ──────────────────────────────────────────────────────────────
@@ -110,8 +120,8 @@ def run_swing_strategy_backtest(
     dist_pct = (close / ema_safe - 1) * 100  # 正值 = 高於 EMA20
 
     # 進場條件（全部向量化，一次計算整個 Series）
-    # 條件 1+2: 年線多頭 + RSI 動能偏多
-    bull_trend = (close > bt_df['SMA_200']) & (bt_df['RSI_14'] > 50)
+    # 條件 1+2: 年線多頭 + RSI 動能偏多（使用自訂閾值）
+    bull_trend = (close > bt_df['SMA_200']) & (bt_df['RSI_14'] > _rsi_min)
 
     # 條件 4: MACD > Signal（多頭動能交叉確認）
     # 若欄位不存在（資料不足），退化為全 True（忽略此條件）
@@ -120,13 +130,13 @@ def run_swing_strategy_backtest(
     else:
         macd_bull = pd.Series(True, index=bt_df.index)
 
-    # 條件 5: ADX > 20（市場有趨勢，過濾橫盤假訊號）
+    # 條件 5: ADX > 自訂閾值（市場有趨勢，過濾橫盤假訊號）
     if 'ADX' in bt_df.columns:
-        adx_trending = (bt_df['ADX'] > 20).fillna(False)
+        adx_trending = (bt_df['ADX'] > _adx_min).fillna(False)
     else:
         adx_trending = pd.Series(True, index=bt_df.index)
 
-    is_entry   = bull_trend & (dist_pct >= 0.0) & (dist_pct <= 1.5) & macd_bull & adx_trending
+    is_entry   = bull_trend & (dist_pct >= _dist_min) & (dist_pct <= _dist_max) & macd_bull & adx_trending
 
     # 出場條件
     is_exit    = close < ema_safe

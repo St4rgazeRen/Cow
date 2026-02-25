@@ -368,6 +368,39 @@ def fetch_market_data():
     else:
         btc_final = local_df
 
+    # ── T 日數據縫合 (Data Stitching) ───────────────────────────────────────────
+    # 確保本地 SQLite 歷史資料與今日即時 T 日數據無縫 Concat，避免 MA/均線計算斷層。
+    # 若歷史最後一筆早於今日，則嘗試從 Yahoo / Binance 補充當日 K 棒。
+    if not btc_final.empty and btc_final.index[-1].date() < today:
+        today_str = today.strftime('%Y-%m-%d')
+        _tday_df  = pd.DataFrame()
+        # 優先 Yahoo Finance（延遲最小）
+        try:
+            _tday_df = yf.download(
+                "BTC-USD", start=today_str, interval="1d",
+                progress=False, session=session,
+            )
+            if not _tday_df.empty:
+                _tday_df.columns = [
+                    c[0].lower() if isinstance(c, tuple) else c.lower()
+                    for c in _tday_df.columns
+                ]
+        except Exception:
+            _tday_df = pd.DataFrame()
+        # 備援：Binance REST
+        if _tday_df.empty:
+            try:
+                _tday_df = fetch_binance_daily(today_str)
+            except Exception:
+                _tday_df = pd.DataFrame()
+        # 縫合：把 T 日數據 Concat 到歷史末端
+        if not _tday_df.empty:
+            if _tday_df.index.tz is not None:
+                _tday_df.index = _tday_df.index.tz_localize(None)
+            btc_final = pd.concat([btc_final, _tday_df])
+            btc_final = btc_final[~btc_final.index.duplicated(keep='last')]
+            btc_final.sort_index(inplace=True)
+
     if btc_final.empty:
         print("[Market] ❌ 五層備援均失敗（本地DB / Yahoo / Binance / Kraken / CryptoCompare）")
         return pd.DataFrame(), pd.DataFrame()
