@@ -83,29 +83,37 @@ def _season_css_color(season: str) -> str:
     }.get(season, "#ffffff")
 
 
-def _render_season_timeline(season_info: dict):
+def _render_season_timeline(season_info: dict, effective_season: str = None):
     """
-    用 Plotly 繪製週期進度條（四季色塊 + 當前位置指針）
+    用 Plotly 繪製週期進度條（四季色塊 + 當前位置指針）。
+    effective_season: 若與時間季節不同，額外標記有效季節所在色塊（高亮邊框）。
     """
     fig = go.Figure()
 
-    # 四季色塊
+    season_keys   = ["spring", "summer", "autumn", "winter"]
     season_colors = ["#1b5e20", "#f9a825", "#e65100", "#0d47a1"]
     season_labels = ["🌱 春 (月0-11)", "☀️ 夏 (月12-23)", "🍂 秋 (月24-35)", "❄️ 冬 (月36-47)"]
-    for i, (col, lab) in enumerate(zip(season_colors, season_labels)):
+
+    for i, (key, col, lab) in enumerate(zip(season_keys, season_colors, season_labels)):
+        # 若是有效季節且與時間季節不同，加亮邊框
+        is_eff = (effective_season == key) and (effective_season != season_info["season"])
         fig.add_shape(
             type="rect",
             x0=i * 12, x1=(i + 1) * 12,
             y0=0, y1=1,
-            fillcolor=col, opacity=0.4, layer="below", line_width=0,
+            fillcolor=col,
+            opacity=0.7 if is_eff else 0.35,
+            layer="below",
+            line=dict(color="#ffffff", width=3) if is_eff else dict(width=0),
         )
         fig.add_annotation(
             x=i * 12 + 6, y=0.5,
-            text=lab, showarrow=False,
-            font=dict(size=11, color="white"),
+            text=lab + (" ← 實際" if is_eff else ""),
+            showarrow=False,
+            font=dict(size=11, color="white", family=("bold" if is_eff else "normal")),
         )
 
-    # 當前位置指針
+    # 當前位置指針（白線）
     m = season_info["month_in_cycle"]
     fig.add_shape(
         type="line",
@@ -113,18 +121,18 @@ def _render_season_timeline(season_info: dict):
         line=dict(color="#ffffff", width=3),
     )
     fig.add_annotation(
-        x=m, y=1.05,
+        x=m, y=1.1,
         text=f"現在 (月{m})",
         showarrow=False,
-        font=dict(size=12, color="white", family="bold"),
+        font=dict(size=12, color="white"),
     )
 
     fig.update_layout(
-        height=120,
-        margin=dict(l=10, r=10, t=30, b=10),
+        height=130,
+        margin=dict(l=10, r=10, t=35, b=10),
         template="plotly_dark",
         xaxis=dict(range=[0, 48], showticklabels=False, showgrid=False, zeroline=False),
-        yaxis=dict(range=[0, 1.2], showticklabels=False, showgrid=False, zeroline=False),
+        yaxis=dict(range=[0, 1.25], showticklabels=False, showgrid=False, zeroline=False),
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
     )
@@ -584,24 +592,50 @@ def render(btc):
     if fc is None:
         st.error("無法取得減半週期資訊，請確認數據範圍。")
     else:
-        si = fc["season_info"]
-        is_bull = fc["forecast_type"] == "bull_peak"
-        s_color = _season_css_color(si["season"])
+        si          = fc["season_info"]
+        eff         = fc["effective_season"]        # 市場校正後的有效季節
+        ms          = fc["market_state"]            # 真實市場狀態
+        is_bull     = fc["forecast_type"] == "bull_peak"
+        is_corrected = fc.get("is_season_corrected", False)
+
+        # 有效季節決定顏色主題
+        eff_color   = _season_css_color(eff["season"])
+        time_color  = _season_css_color(si["season"])
 
         # ── F1. 季節狀態橫幅 ──────────────────────────────────────
+        # 若季節被校正，顯示雙列：「時間季節（灰色）→ 有效季節（高亮）」
+        drawdown_pct = abs(ms["drawdown_from_ath"]) * 100
+        sma200_val   = ms["sma200"]
+        above_str    = "✅ 站上" if ms["is_above_sma200"] else "❌ 跌破"
+
+        if is_corrected:
+            season_header = f"""
+            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                <div style="opacity:0.45;text-decoration:line-through;font-size:1.1rem;color:{time_color};">
+                    {si['emoji']} {si['season_zh']} (時間)
+                </div>
+                <div style="font-size:1.3rem;color:#888;">→</div>
+                <div style="font-size:2rem;font-weight:800;color:{eff_color};">
+                    {eff['emoji']} {eff['season_zh']} (市場實際)
+                </div>
+            </div>"""
+        else:
+            season_header = f"""
+            <div style="font-size:2rem;font-weight:700;color:{eff_color};">
+                {eff['emoji']} {eff['season_zh']}
+            </div>"""
+
         st.markdown(
             f"""
             <div style="
                 background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                border: 1px solid {s_color};
+                border: 2px solid {eff_color};
                 border-radius: 12px;
                 padding: 20px 28px;
                 margin-bottom: 16px;
             ">
-                <div style="font-size:2rem; font-weight:700; color:{s_color};">
-                    {si['emoji']} {si['season_zh']}
-                </div>
-                <div style="color:#ccc; margin-top:6px; font-size:1rem;">
+                {season_header}
+                <div style="color:#ccc; margin-top:10px; font-size:0.95rem;">
                     第 <b style="color:white">{fc['current_cycle_idx']+1}</b> 次減半週期
                     &nbsp;｜&nbsp;
                     減半日: <b style="color:white">{si['halving_date'].strftime('%Y-%m-%d')}</b>
@@ -609,25 +643,31 @@ def render(btc):
                     已過 <b style="color:white">{si['days_since']}</b> 天 /
                     距下次減半還有 <b style="color:white">{si['days_to_next']}</b> 天
                 </div>
-                <div style="color:#aaa; margin-top:4px; font-size:0.9rem;">
-                    週期月份: 第 <b style="color:white">{si['month_in_cycle']}</b> 個月
-                    &nbsp;｜&nbsp;
-                    週期進度: <b style="color:white">{si['cycle_progress']*100:.1f}%</b>
+                <div style="color:#aaa; margin-top:6px; font-size:0.88rem; display:flex; gap:24px; flex-wrap:wrap;">
+                    <span>週期月份: <b style="color:white">第 {si['month_in_cycle']} 個月</b></span>
+                    <span>週期進度: <b style="color:white">{si['cycle_progress']*100:.1f}%</b></span>
+                    <span>距ATH跌幅: <b style="color:{'#ff6b6b' if drawdown_pct > 15 else '#ffd93d'}">
+                        -{drawdown_pct:.1f}%</b> (ATH ${ms['cycle_ath']:,.0f})</span>
+                    <span>200日均線: <b style="color:white">{above_str} ${sma200_val:,.0f}</b></span>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # 週期進度時間軸
-        st.plotly_chart(_render_season_timeline(si), use_container_width=True)
+        # 若季節被校正，顯示警告框
+        if is_corrected and fc.get("correction_reason"):
+            st.warning(fc["correction_reason"])
+
+        # 週期進度時間軸（傳入有效季節供標記）
+        st.plotly_chart(_render_season_timeline(si, effective_season=eff["season"]), use_container_width=True)
 
         st.markdown("---")
 
         # ── F2. 目標價卡片 ────────────────────────────────────────
-        fc_type_zh = "📈 牛市最高價預測" if is_bull else "📉 熊市最低價預測"
+        fc_type_zh   = "📈 牛市最高價預測" if is_bull else "📉 熊市最低價預測"
         target_color = "#ffeb3b" if is_bull else "#42a5f5"
-        conf_bar = fc["confidence"]
+        conf_bar     = fc["confidence"]
 
         col_a, col_b, col_c = st.columns(3)
         with col_a:
@@ -743,7 +783,7 @@ def render(btc):
              "熊市底部期。恐慌拋售為主，適合**定期定額囤幣**，等待下一個春天。"),
         ]
         for col, (emoji, name, bg, desc) in zip(strat_cols, strategies):
-            is_current = name.startswith(si["emoji"])
+            is_current = name.startswith(eff["emoji"]) or name.startswith(si["emoji"])
             border = f"2px solid {s_color}" if is_current else "1px solid #333"
             col.markdown(
                 f"""
