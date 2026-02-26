@@ -114,7 +114,7 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> 
             marker=dict(color='#00e5ff', symbol='triangle-up', size=12, opacity=0.85),
         ), row=1, col=1)
 
-    # 動態跌破防守線出場標記
+    # 動態跌破防守線出場標記 (優化：放大標籤、改亮紅色、加白邊)
     if exit_ma_key in df.columns:
         below_ma = df[df['close'] < df[exit_ma_key]]
         if not below_ma.empty:
@@ -124,9 +124,15 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> 
             exit_pts = below_ma[exit_mask]
             if not exit_pts.empty:
                 fig.add_trace(go.Scatter(
-                    x=exit_pts.index, y=exit_pts['high'] * 1.003,
+                    x=exit_pts.index, y=exit_pts['high'] * 1.01, # 稍微調高避免被K線遮擋
                     mode='markers', name=f'出場信號 🔴 (破 {exit_ma_key})',
-                    marker=dict(color='#ff4b4b', symbol='triangle-down', size=10, opacity=0.8),
+                    marker=dict(
+                        color='#ff1744',       # 極度亮眼的螢光紅
+                        symbol='triangle-down', 
+                        size=18,               # 放大標記尺寸
+                        opacity=1.0,           # 取消半透明，100% 實心
+                        line=dict(color='white', width=2) # 加上明顯白邊增加對比
+                    ),
                 ), row=1, col=1)
 
     # ── Row 2: RSI_14 ──
@@ -207,7 +213,7 @@ def render(btc, curr, funding_rate, proxies,
     st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
-    # A. 策略條件監控 (進出場邏輯明細)
+    # A. 策略條件監控 (儀表板美化版：2列 x 3欄)
     # ──────────────────────────────────────────────────────────────
     st.subheader("A. 策略條件監控 (進出場邏輯)")
 
@@ -227,21 +233,25 @@ def render(btc, curr, funding_rate, proxies,
     above_ema20  = curr['close'] >= curr['EMA_20']
 
     st.markdown("#### 🟢 進場條件 (以下 6 項全數通過即觸發買進)")
-    f_col1, f_col2, f_col3, f_col4, f_col5, f_col6 = st.columns(6)
-    f_col1.markdown(f"**① 趨勢向上**\nPrice > MA200\n{'✅ 通過' if bull_ma else '❌ 未通過'}")
-    f_col2.markdown(f"**② 動能偏多**\nRSI_14 > 50\n{'✅ 通過' if bull_rsi else '❌ 未通過'}")
-    f_col3.markdown(f"**③ MACD金叉**\nMACD > Signal\n{'✅ 通過' if bull_macd else '❌ 未通過'}")
-    f_col4.markdown(f"**④ 趨勢成型**\nADX > 20\n{'✅ 通過' if adx_trending else '❌ 盤整'}")
-    f_col5.markdown(f"**⑤ 資金健康**\n費率 < 0.05%\n{'✅ 通過' if not_overheated else '⚠️ 過熱'}")
-    f_col6.markdown(f"**⑥ 站上短均**\nPrice ≥ EMA20\n{'✅ 通過' if above_ema20 else '❌ 未達標'}")
+    
+    # 將進場條件改為 2 列 x 3 欄的 metric 儀表板設計，漂亮且易讀
+    r1c1, r1c2, r1c3 = st.columns(3)
+    r2c1, r2c2, r2c3 = st.columns(3)
+
+    r1c1.metric("① 趨勢向上 (Price > MA200)", "✅ 通過" if bull_ma else "❌ 未通過")
+    r1c2.metric("② 動能偏多 (RSI_14 > 50)", "✅ 通過" if bull_rsi else "❌ 未通過")
+    r1c3.metric("③ MACD金叉 (> Signal)", "✅ 通過" if bull_macd else "❌ 未通過")
+    
+    r2c1.metric("④ 趨勢成型 (ADX > 20)", f"✅ 通過 ({adx_val:.1f})" if adx_trending else f"❌ 盤整 ({adx_val:.1f})")
+    r2c2.metric("⑤ 資金健康 (費率 < 0.05%)", "✅ 通過" if not_overheated else "⚠️ 過熱")
+    r2c3.metric("⑥ 站上短均 (Price ≥ EMA20)", "✅ 通過" if above_ema20 else "❌ 未達標")
 
     can_long = bull_ma and bull_rsi and bull_macd and adx_trending and not_overheated and above_ema20
 
     st.markdown("#### 🔴 出場條件")
     is_exit = curr['close'] < curr.get(exit_ma_key, curr['close'])
-    e_col1, e_col2 = st.columns([1, 5])
-    e_col1.markdown(f"**① 跌破防守線**\nPrice < {exit_ma_key}")
-    e_col2.markdown(f"<br>{'🔴 **已跌破 (觸發出場)**' if is_exit else '✅ **安全 (守住防守線)**'}", unsafe_allow_html=True)
+    e_col1, e_col2, e_col3 = st.columns(3)
+    e_col1.metric(f"① 跌破防守線 (Price < {exit_ma_key})", "🔴 觸發出場" if is_exit else "✅ 安全 (未跌破)")
 
     # ── 未平倉量 (Open Interest) 顯示區塊 ──
     if open_interest is not None:
