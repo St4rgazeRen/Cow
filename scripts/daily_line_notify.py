@@ -1,7 +1,7 @@
 """
 scripts/daily_line_notify.py
 用於 GitHub Actions 的戰情室自動推播腳本。
-(加入：Kraken 即時價格備援 + 動態價格覆寫指標)
+同步更新：補齊分數計算、MA200對比、0.03%費率燈號及五段式建議邏輯。
 """
 
 import os
@@ -24,129 +24,110 @@ sys.path.append(_REPO_ROOT)
 
 from service.realtime import fetch_realtime_data
 from service.market_data import fetch_market_data
+from service.onchain import _fetch_funding_rate_history
 from core.indicators import calculate_technical_indicators, calculate_ahr999
-from core.bear_bottom import calculate_bear_bottom_score, calculate_market_cycle_score
+from core.bear_bottom import calculate_bear_bottom_indicators, calculate_market_cycle_score
+from core.season_forecast import forecast_price
 
 def _get_cycle_meta(score: int):
-    if score >= 75: return "🔥 狂熱牛頂", "#ff4b4b", "風險極高，建議分批止盈。此區域歷史上出現牛市最終頂部。"
-    elif score >= 40: return "🐂 牛市主升段", "#ff9800", "趨勢多頭排列，可持有並設移動止盈，避免頂部追高。"
-    elif score >= 15: return "🌱 初牛復甦", "#8bc34a", "市場轉暖，分批建倉機會。等待黃金交叉與年線翻揚確認。"
-    elif score >= -15: return "⚪ 中性過渡", "#9e9e9e", "多空力量均衡，觀望為主，等待方向確認。"
-    elif score >= -40: return "📉 轉折回調", "#7986cb", "跌破關鍵均線，趨勢轉弱，建議輕倉或觀望。"
-    elif score >= -75: return "❄️ 熊市築底", "#42a5f5", "熊市中後期，多指標出現底部信號，開始定投積累。"
-    else: return "🟦 歷史極值底部", "#00bcd4", "All-In 信號！歷史上極為罕見的買入機會，建議全力積累。"
+    if score >= 75: return "🔥 狂熱牛頂", "#ff4b4b", "風險極高，建議分批止盈。"
+    elif score >= 40: return "🐂 牛市主升段", "#ff9800", "趨勢多頭排列，可持有並設移動止盈。"
+    elif score >= 15: return "🌱 初牛復甦", "#8bc34a", "市場轉暖，分批建倉機會。"
+    elif score >= -15: return "⚪ 中性過渡", "#9e9e9e", "多空均衡，觀望為主。"
+    elif score >= -40: return "📉 轉折回調", "#7986cb", "趨勢轉弱，建議輕倉。"
+    elif score >= -75: return "❄️ 熊市築底", "#42a5f5", "開始定投積累。"
+    else: return "🟦 歷史極值底部", "#00bcd4", "All-In 信號！歷史罕見買入機會。"
 
 def get_decision_data():
     summary = {
-        "price": "API 阻擋 (N/A)",
-        "cycle_score": 0, "cycle_name": "N/A", "cycle_color": "#aaaaaa", "cycle_advice": "",
-        "ahr_text": "N/A", "ahr_color": "#aaaaaa",
-        "bear_score": 0, "bear_color": "#aaaaaa", "bar_text": "□□□□□□□□□□",
+        "price": "N/A", "cycle_score": 0, "cycle_name": "N/A", "cycle_color": "#aaaaaa", "cycle_advice": "",
+        "ma200_label": "N/A", "funding_text": "N/A", "funding_color": "#aaaaaa",
         "trend_text": "N/A", "trend_color": "#aaaaaa",
         "rsi_text": "N/A", "rsi_color": "#aaaaaa",
         "macd_text": "N/A", "macd_color": "#aaaaaa",
         "adx_text": "N/A", "adx_color": "#aaaaaa",
         "ema_dist_text": "N/A", "ema_dist_color": "#aaaaaa",
-        "swing_advice": "N/A", "swing_advice_color": "#aaaaaa"
+        "swing_advice": "N/A", "swing_advice_color": "#aaaaaa",
+        "forecast_type": "bear_bottom", "target_low": 0, "target_median": 0, "target_high": 0,
+        "label_low": "最深", "label_high": "最淺"
     }
     
     current_price = None
-
     try:
         realtime_data = fetch_realtime_data()
         if realtime_data and realtime_data.get('price'):
             current_price = float(realtime_data['price'])
-            summary["price"] = f"${current_price:,.0f}"
-        else:
-            raise ValueError("無效的即時價格")
-    except Exception as e:
-        print(f"即時數據獲取失敗，嘗試 Kraken 備援: {e}")
-        try:
-            resp = requests.get("https://api.kraken.com/0/public/Ticker?pair=XXBTZUSD", verify=False, timeout=10)
-            if resp.status_code == 200:
-                current_price = float(resp.json()['result']['XXBTZUSD']['c'][0])
-                summary["price"] = f"${current_price:,.0f}"
-        except Exception as e2:
-            print(f"Kraken 備援失敗: {e2}")
+    except: pass
 
     try:
         btc_df, _ = fetch_market_data()
+        funding_df = _fetch_funding_rate_history()
+        
+        latest_funding = 0.0
+        if not funding_df.empty:
+            latest_funding = funding_df['fundingRate'].iloc[-1]
+            f_is_hot = latest_funding >= 0.03
+            summary["funding_text"] = f"{'🔴' if f_is_hot else '🟢'} {latest_funding:.4f}%"
+            summary["funding_color"] = "#ff4b4b" if f_is_hot else "#00ff88"
+
         if not btc_df.empty:
+            # 補齊所有指標計算以對齊羅盤分數
             btc_df = calculate_technical_indicators(btc_df)
             btc_df = calculate_ahr999(btc_df)
+            btc_df = calculate_bear_bottom_indicators(btc_df)
+            
             curr = btc_df.iloc[-1].copy()
+            if current_price is None:
+                current_price = float(curr['close'])
             
-            if current_price is not None:
-                curr['close'] = current_price
-            else:
-                current_price = curr['close']
-                summary["price"] = f"${current_price:,.0f} (延遲)"
-
-            cycle_score = calculate_market_cycle_score(curr)
-            c_name, c_color, c_advice = _get_cycle_meta(cycle_score)
-            summary["cycle_score"] = cycle_score
-            summary["cycle_name"] = c_name
-            summary["cycle_color"] = c_color
-            summary["cycle_advice"] = c_advice
-
-            ahr_val = curr.get('AHR999')
-            if pd.notna(ahr_val):
-                if ahr_val < 0.45:
-                    summary["ahr_text"] = f"{ahr_val:.2f} (🟢抄底)"
-                    summary["ahr_color"] = "#00ff88"
-                elif ahr_val < 1.2:
-                    summary["ahr_text"] = f"{ahr_val:.2f} (🟡定投)"
-                    summary["ahr_color"] = "#ffeb3b"
-                else:
-                    summary["ahr_text"] = f"{ahr_val:.2f} (🔴高估)"
-                    summary["ahr_color"] = "#ff4b4b"
-
-            bear_score, _ = calculate_bear_bottom_score(curr)
-            b_score_int = max(0, min(100, int(bear_score)))
-            summary["bear_score"] = b_score_int
+            curr['close'] = current_price
+            summary["price"] = f"${current_price:,.0f}"
+            curr['funding_rate'] = latest_funding
             
-            blocks = b_score_int // 10
-            summary["bar_text"] = "■" * blocks + "□" * (10 - blocks)
+            # MA200 狀態標籤
+            ma200 = curr.get('SMA_200', 0)
+            ma_is_higher = ma200 > current_price
+            summary["ma200_label"] = f"{'🔴' if ma_is_higher else '🟢'} ${ma200:,.0f} ({'>' if ma_is_higher else '<'} 現價)"
 
-            if b_score_int >= 60: summary["bear_color"] = "#00ff88"
-            elif b_score_int >= 45: summary["bear_color"] = "#ffeb3b"
-            else: summary["bear_color"] = "#ff4b4b"
+            # 預測區塊
+            f_res = forecast_price(current_price, btc_df)
+            if f_res:
+                summary.update({
+                    "forecast_type": f_res["forecast_type"],
+                    "target_low": f_res["target_low"], "target_median": f_res["target_median"], "target_high": f_res["target_high"],
+                    "label_low": "最深" if "bear" in f_res["forecast_type"] else "保守",
+                    "label_high": "最淺" if "bear" in f_res["forecast_type"] else "樂觀"
+                })
 
-            close = curr['close']
-            sma200 = curr.get('SMA_200', 0)
+            # 分數計算
+            score = calculate_market_cycle_score(curr)
+            summary["cycle_score"] = score
+            summary["cycle_name"], summary["cycle_color"], summary["cycle_advice"] = _get_cycle_meta(score)
+
+            # 波段雷達與五段式建議邏輯
             sma50 = curr.get('SMA_50', 0)
-            is_bull_trend = close > sma200 and sma50 > sma200
-            if is_bull_trend:
-                summary["trend_text"] = "🟢 多頭排列"
-                summary["trend_color"] = "#00ff88"
-            else:
-                summary["trend_text"] = "🔴 空頭/震盪"
-                summary["trend_color"] = "#ff4b4b"
-
+            is_bull_trend = current_price > ma200 and sma50 > ma200
+            summary["trend_text"] = "🟢 多頭排列" if is_bull_trend else "🔴 空頭/震盪"
+            summary["trend_color"] = "#00ff88" if is_bull_trend else "#ff4b4b"
+            
             rsi = curr.get('RSI_14', 0)
-            summary["rsi_text"] = f"🟢 > 50 ({rsi:.1f})" if rsi > 50 else f"🔴 < 50 ({rsi:.1f})"
+            summary["rsi_text"] = f"{'🟢' if rsi > 50 else '🔴'} ({rsi:.1f})"
             summary["rsi_color"] = "#00ff88" if rsi > 50 else "#ff4b4b"
 
-            macd = curr.get('MACD', 0)
-            macd_sig = curr.get('MACD_Signal', 0)
+            macd, macd_sig = curr.get('MACD', 0), curr.get('MACD_Signal', 0)
             summary["macd_text"] = "🟢 金叉" if macd > macd_sig else "🔴 死叉"
             summary["macd_color"] = "#00ff88" if macd > macd_sig else "#ff4b4b"
 
             adx = curr.get('ADX_14', 0)
-            summary["adx_text"] = f"🟢 趨勢成型 ({adx:.1f})" if adx > 20 else f"🔴 盤整 ({adx:.1f})"
+            summary["adx_text"] = f"{'🟢' if adx > 20 else '🔴'} ({adx:.1f})"
             summary["adx_color"] = "#00ff88" if adx > 20 else "#ff4b4b"
 
             ema20 = curr.get('EMA_20', 0)
-            ema_dist = 0
-            if ema20 > 0:
-                ema_dist = (close - ema20) / ema20 * 100
-                if 0 <= ema_dist <= 1.5:
-                    summary["ema_dist_text"] = f"🟢 買點區間 ({ema_dist:.1f}%)"
-                    summary["ema_dist_color"] = "#00ff88"
-                else:
-                    summary["ema_dist_text"] = f"🔴 偏離/跌破 ({ema_dist:.1f}%)"
-                    summary["ema_dist_color"] = "#ff4b4b"
+            ema_dist = (current_price - ema20) / ema20 * 100 if ema20 > 0 else 0
+            summary["ema_dist_text"] = f"{'🟢' if 0 <= ema_dist <= 1.5 else '🔴'} ({ema_dist:.1f}%)"
+            summary["ema_dist_color"] = "#00ff88" if 0 <= ema_dist <= 1.5 else "#ff4b4b"
 
+            # 綜合建議判斷
             if is_bull_trend:
                 if 0 <= ema_dist <= 1.5 and rsi > 50 and macd > macd_sig and adx > 20:
                     summary["swing_advice"] = "🚀 動能共振！絕佳進場買點"
@@ -165,18 +146,13 @@ def get_decision_data():
                     summary["swing_advice"] = "⚪ 趨勢偏弱，空頭或震盪格局"
                     summary["swing_advice_color"] = "#aaaaaa"
 
-    except Exception as e:
-        print(f"歷史數據獲取或計算失敗: {e}")
-
+    except Exception as e: print(f"Data error: {e}")
     return summary
 
-def build_flex_message(summary):
+def build_flex_message(s):
     date_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    
-    c_score = summary["cycle_score"]
-    left_flex = int((c_score + 100) / 2)
-    left_flex = max(1, min(99, left_flex))
-    right_flex = 100 - left_flex
+    left_flex = max(1, min(99, int((s["cycle_score"] + 100) / 2)))
+    forecast_title = "❄️ 熊市最低價預測" if s["forecast_type"] == "bear_bottom" else "🚀 牛市最高價預測"
     
     flex_bubble = {
       "type": "bubble", "size": "giga",
@@ -190,98 +166,65 @@ def build_flex_message(summary):
       "body": {
         "type": "box", "layout": "vertical", "backgroundColor": "#222222",
         "contents": [
-          { "type": "text", "text": f"💰 BTC {summary['price']}", "weight": "bold", "size": "xxl", "color": "#00ff88", "adjustMode": "shrink-to-fit" },
+          { "type": "text", "text": f"💰 BTC {s['price']}", "weight": "bold", "size": "xxl", "color": "#00ff88" },
           { "type": "separator", "margin": "md", "color": "#444444" },
-          
           { "type": "text", "text": "🧭 長週期多空評分", "weight": "bold", "color": "#ffffff", "margin": "md" },
           { "type": "box", "layout": "horizontal", "contents": [
               { "type": "box", "layout": "vertical", "flex": 7, "contents": [
-                  { "type": "text", "text": summary["cycle_name"], "color": summary["cycle_color"], "weight": "bold", "size": "md" },
-                  { "type": "text", "text": summary["cycle_advice"], "color": "#aaaaaa", "size": "xs", "wrap": True, "margin": "xs" }
+                  { "type": "text", "text": s["cycle_name"], "color": s["cycle_color"], "weight": "bold", "size": "md" },
+                  { "type": "text", "text": s["cycle_advice"], "color": "#aaaaaa", "size": "xs", "wrap": True }
               ]},
               { "type": "box", "layout": "vertical", "flex": 3, "alignItems": "flex-end", "contents": [
-                  { "type": "text", "text": f"{c_score:+d}", "color": summary["cycle_color"], "size": "xxl", "weight": "bold" },
-                  { "type": "text", "text": "-100(深熊) → +100(狂熱)", "color": "#666666", "size": "xxs", "wrap": True, "align": "end" }
+                  { "type": "text", "text": f"{s['cycle_score']:+d}", "color": s["cycle_color"], "size": "xxl", "weight": "bold" }
               ]}
           ]},
-          { "type": "box", "layout": "horizontal", "margin": "md", "cornerRadius": "4px", "height": "8px", "contents": [
-              { "type": "box", "layout": "vertical", "flex": left_flex, "backgroundColor": summary["cycle_color"], "contents": [{"type": "filler"}] },
-              { "type": "box", "layout": "vertical", "flex": right_flex, "backgroundColor": "#444444", "contents": [{"type": "filler"}] }
+          { "type": "box", "layout": "horizontal", "margin": "md", "height": "8px", "contents": [
+              { "type": "box", "layout": "vertical", "flex": left_flex, "backgroundColor": s["cycle_color"], "contents": [] },
+              { "type": "box", "layout": "vertical", "flex": 100-left_flex, "backgroundColor": "#444444", "contents": [] }
           ]},
-
+          { "type": "box", "layout": "vertical", "margin": "lg", "backgroundColor": "#2a2a2a", "paddingAll": "md", "cornerRadius": "8px", "contents": [
+              { "type": "text", "text": forecast_title, "color": "#ffffff", "size": "xs", "weight": "bold" },
+              { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
+                  { "type": "box", "layout": "vertical", "contents": [{"type": "text", "text": s["label_low"], "color": "#aaaaaa", "size": "xxs", "align": "center"},{"type": "text", "text": f'${s["target_low"]:,.0f}', "color": "#ffffff", "size": "xs", "align": "center"}]},
+                  { "type": "box", "layout": "vertical", "contents": [{"type": "text", "text": "中位數", "color": "#00ff88", "size": "xxs", "align": "center"},{"type": "text", "text": f'${s["target_median"]:,.0f}', "color": "#00ff88", "size": "sm", "weight": "bold", "align": "center"}]},
+                  { "type": "box", "layout": "vertical", "contents": [{"type": "text", "text": s["label_high"], "color": "#aaaaaa", "size": "xxs", "align": "center"},{"type": "text", "text": f'${s["target_high"]:,.0f}', "color": "#ffffff", "size": "xs", "align": "center"}]}
+              ]}
+          ]},
           { "type": "separator", "margin": "lg", "color": "#444444" },
-          
-          { "type": "text", "text": "🐻 底部探測", "weight": "bold", "color": "#ffffff", "margin": "md" },
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "AHR999", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["ahr_text"], "color": summary["ahr_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "底部評分", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": f"{summary['bear_score']}/100", "color": summary["bear_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "text", "text": summary["bar_text"], "color": summary["bear_color"], "size": "md", "align": "end", "margin": "sm" },
-
-          { "type": "separator", "margin": "lg", "color": "#444444" },
-
           { "type": "text", "text": "🐂 波段雷達", "weight": "bold", "color": "#ffffff", "margin": "md" },
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "大趨勢 (SMA)", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["trend_text"], "color": summary["trend_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "RSI 動能", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["rsi_text"], "color": summary["rsi_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "MACD 交叉", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["macd_text"], "color": summary["macd_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "ADX 趨勢", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["adx_text"], "color": summary["adx_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
-          { "type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-             { "type": "text", "text": "EMA20 乖離", "color": "#aaaaaa", "size": "sm", "flex": 4 },
-             { "type": "text", "text": summary["ema_dist_text"], "color": summary["ema_dist_color"], "size": "sm", "weight": "bold", "flex": 6, "align": "end" }
-          ]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "MA200 支撐", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["ma200_label"], "color": "#ffffff", "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "資金費率", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["funding_text"], "color": s["funding_color"], "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "趨勢方向", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["trend_text"], "color": s["trend_color"], "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "RSI 強弱", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["rsi_text"], "color": s["rsi_color"], "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "MACD 交叉", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["macd_text"], "color": s["macd_color"], "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "ADX 動能", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["adx_text"], "color": s["adx_color"], "size": "sm", "weight": "bold", "align": "end"}]},
+          { "type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "EMA20 乖離", "color": "#aaaaaa", "size": "sm"},{"type": "text", "text": s["ema_dist_text"], "color": s["ema_dist_color"], "size": "sm", "weight": "bold", "align": "end"}]},
           { "type": "box", "layout": "vertical", "margin": "lg", "backgroundColor": "#1a1a1a", "paddingAll": "md", "cornerRadius": "8px", "contents": [
-              { "type": "text", "text": "💡 波段策略狀態", "color": "#888888", "size": "xs", "weight": "bold", "margin": "sm" },
-              { "type": "text", "text": summary["swing_advice"], "color": summary["swing_advice_color"], "size": "sm", "weight": "bold", "wrap": True }
+              { "type": "text", "text": "💡 策略建議", "color": "#888888", "size": "xxs", "weight": "bold" },
+              { "type": "text", "text": s["swing_advice"], "color": s["swing_advice_color"], "size": "xs", "weight": "bold", "wrap": True }
           ]}
         ]
       }
     }
-
-    return {
-        "type": "flex",
-        "altText": f"🦅 決策速報: BTC {summary['price']} | 評分: {c_score}",
-        "contents": flex_bubble
-    }
+    return {"type": "flex", "altText": f"🦅 決策速報: BTC {s['price']}", "contents": flex_bubble}
 
 def send_line_message(flex_payload):
     line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     line_user_id = os.getenv("LINE_USER_ID") 
-    
     if not line_token or not line_user_id:
-        print("❌ 錯誤: 缺少 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID 環境變數")
+        print("❌ 錯誤: 缺少 LINE 憑證")
         sys.exit(1)
-        
     url = "https://api.line.me/v2/bot/message/push"
     headers = { "Content-Type": "application/json", "Authorization": f"Bearer {line_token}" }
     data = { "to": line_user_id, "messages": [flex_payload] }
-    
     try:
         response = requests.post(url, headers=headers, json=data, verify=False, timeout=10)
         response.raise_for_status()
         print("✅ LINE 速報發送成功！")
     except Exception as e:
-        print(f"❌ LINE 推播發送失敗: {e}")
+        print(f"❌ LINE 推播失敗: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    print(f"[{datetime.now()}] 開始執行戰情室推播作業...")
-    summary_data = get_decision_data()
-    flex_msg = build_flex_message(summary_data)
-    send_line_message(flex_msg)
-    print("作業結束。")
+    data = get_decision_data()
+    send_line_message(build_flex_message(data))
