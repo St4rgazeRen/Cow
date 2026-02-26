@@ -21,7 +21,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # 確保與你專案使用的版本一致
+        python-version: '3.11' # 確保與你專案使用的版本一致
         cache: 'pip'           # 快取套件以加快後續執行速度
 
     - name: Install Dependencies
