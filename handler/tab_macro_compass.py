@@ -29,9 +29,9 @@ import numpy as np
 from datetime import datetime
 
 from service.macro_data import fetch_m2_series, fetch_usdjpy, fetch_us_cpi_yoy, get_quantum_threat_level
-# ✅ 修正：移除不存在的獨立計算函式，只引入整合後的 calculate_bear_bottom_score
 from core.bear_bottom import calculate_bear_bottom_score
-from core.indicators import MACD_Color
+# ✅ 修正：移除這行無效且未使用的 import
+# from core.indicators import MACD_Color
 from core.season_forecast import get_seasonal_phase, forecast_price_targets
 
 # 共通卡片樣式設定
@@ -218,7 +218,6 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
     st.markdown("#### 3. 熊市底部獵人 (Bottom Hunter)")
     st.caption("透過 8 大鏈上與技術指標，量化評估當前是否處於歷史大底。分數越高代表越接近絕對底部。")
 
-    # ✅ 修正：直接使用傳入的 curr 字典計算，並解構字典回傳的 signals
     bottom_score, signals = calculate_bear_bottom_score(curr)
 
     hunter_c1, hunter_c2 = st.columns([1, 2])
@@ -259,17 +258,14 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
         st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.markdown("##### 🔍 八大指標細項狀態")
         
-        # ✅ 修正：改由迭代 signals 字典，支援新的欄位格式與更強的防呆
         col_idx = 0
         cols = st.columns(4)
         
         for name, data in signals.items():
             with cols[col_idx % 4]:
-                # 若得分大於 0 代表指標被觸發 (hit)
                 hit = data['score'] > 0
                 color = "#00e676" if hit else "#757575"
                 icon = "✅" if hit else "❌"
-                # 若值為 '—' (無資料)，標示顏色改為中性灰色
                 if data['value'] == '—':
                     icon = "⏳"
                     color = "#aaaaaa"
