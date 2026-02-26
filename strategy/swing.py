@@ -48,10 +48,10 @@ def run_swing_strategy_backtest(
     initial_capital=10_000,
     fee_rate=DEFAULT_FEE_RATE,
     slippage_rate=DEFAULT_SLIPPAGE_RATE,
-    entry_dist_max_pct: float = None, # 保留參數以維持相容性，但內部邏輯已解除限制
+    entry_dist_min_pct: float = None,  # ✅ 修正 1：參數名稱改回 entry_dist_min_pct，與 UI 傳入的名稱一致
     rsi_min: int = None,
     adx_min: int = None,
-    exit_ma: str = "SMA_50",  # 新增：接收 UI 傳來的動態防守線參數
+    exit_ma: str = "SMA_50",  # 接收 UI 傳來的動態防守線參數
 ):
     """
     Antigravity v4 波段策略回測（五合一進場過濾 + 動態出場防守線）
@@ -85,7 +85,7 @@ def run_swing_strategy_backtest(
         return pd.DataFrame(), 0.0, 0.0, 0, 0.0, {}
 
     # 套用自訂參數，未提供則使用安全預設值
-    _dist_min = 0.0  # 強制最小乖離為 0 (站上 EMA20)
+    _dist_min = entry_dist_min_pct if entry_dist_min_pct is not None else 0.0
     _rsi_min  = rsi_min  if rsi_min  is not None else 50
     _adx_min  = adx_min  if adx_min  is not None else 20
 
