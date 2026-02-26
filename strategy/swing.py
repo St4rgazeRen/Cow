@@ -139,7 +139,14 @@ def run_swing_strategy_backtest(
     is_entry   = bull_trend & (dist_pct >= _dist_min) & (dist_pct <= _dist_max) & macd_bull & adx_trending
 
     # 出場條件
-    is_exit    = close < ema_safe
+    # 原本的寫法:
+    # is_exit = close < ema_safe
+    
+    # 修改為 (解法 2: 跌破 50 日均線才算波段結束)
+    if 'SMA_50' in bt_df.columns:
+        is_exit = close < bt_df['SMA_50']
+    else:
+        is_exit = close < ema_safe  # 若無 SMA50 則退回原本設定
 
     # ──────────────────────────────────────────────────────────────
     # 第二段：狀態機迭代「訊號觸發點」（不是逐行，只迭代轉換）
