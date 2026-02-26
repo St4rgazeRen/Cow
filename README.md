@@ -14,6 +14,7 @@
 | 2 | 🌊 波段狙擊 | Antigravity v4 進出場信號（EMA20+SMA200+RSI+MACD+ADX 五合一過濾）、OI 未平倉量、Kelly 倉位計算 |
 | 3 | 💰 雙幣理財 | Black-Scholes APY 試算、行權價梯形視覺化、Delta 風險估算、動態無風險利率 |
 | 4 | ⏳ 時光機回測 | 自訂區間波段 PnL（可調參數滑桿 + 🔬 最佳參數搜尋）、雙幣滾倉回測、牛市雷達準確度驗證（含 MA50 視覺化） |
+| 🤖 | 決策速報推播 | 透過 GitHub Actions 每日雙時段 (09:23, 15:39) 自動抓取大盤與指標數據，並發送高質感 Flex Message 視覺化決策面板至 LINE |
 
 ---
 
@@ -50,6 +51,10 @@ strategy/
   dual_invest.py    雙幣期權策略引擎（Black-Scholes，動態無風險利率）
   notifier.py       LINE Bot 主動推播通知
 
+scripts/
+  daily_line_notify.py   GitHub Actions 雲端自動推播腳本（Kraken 備援 + 動態價格覆寫）
+  test_flex_message.py   本地端測試 LINE Flex Message 排版的除錯腳本
+
 handler/
   layout.py          頁面設置、側欄（v2.0 精簡：只保留日期區間，策略參數移至各 Tab）
   tab_macro_compass.py Tab 1：長週期週期羅盤（原 Tab1 牛市雷達 + Tab5 熊市底部獵人合併；雙 Gauge + 8 指標卡片 + 四季預測）
@@ -64,7 +69,8 @@ tests/
 
 .env.example        環境變數模板（API Key 設定）
 .github/workflows/
-  keepalive.yml     自動 Ping，防止 Streamlit 休眠
+  keepalive.yml          自動 Ping，防止 Streamlit 休眠
+  daily_line_notify.yml  每日自動發送 LINE 決策速報的 GitHub Actions 排程設定
 ```
 
 ---
@@ -193,6 +199,51 @@ streamlit run app.py
 
 ---
 
+## 🤖 LINE 決策速報自動推播設定 (GitHub Actions)
+
+本功能將每日市場快照升級為「決策輔助面板」，透過 GitHub Actions 定時觸發，無需本機常駐即可自動發送高質感 LINE Flex Message。
+
+**核心價值：**
+推播內容不只是價格通知，而是一套完整的決策輔助框架，涵蓋三大核心模組：
+- **長週期多空評分進度條**：視覺化呈現 -100~+100 牛熊複合評分的當前位置
+- **底部探測器**：AHR999 數值與熊市底部評分（0-100）即時讀取
+- **波段雷達五燈獎**：Antigravity v4 五項進場條件（EMA20/SMA200/RSI/MACD/ADX）逐項亮燈狀態
+
+**雙時段排程：**
+已在 `.github/workflows/daily_line_notify.yml` 中設定每日自動執行：
+- UTC 01:23（台灣時間 **09:23**）— 早盤決策參考
+- UTC 07:39（台灣時間 **15:39**）— 午後盤勢確認
+
+**強健備援機制：**
+`scripts/daily_line_notify.py` 內建多層備援以確保雲端環境穩定運作：
+- **Kraken API 即時價格備援**：當 Binance 受 IP 封鎖或 Yahoo 遭限流時，自動切換至 Kraken 抓取即時報價
+- **本地 SQLite DB 歷史數據備援**：優先讀取 `db/*.db` 計算技術指標，不依賴外部 API
+- **動態收盤價覆寫**：抓取最新即時價後自動覆寫當日收盤價，確保 SMA/EMA/RSI 等指標計算精準，不含過時數據
+- **Python 3.12 環境**：為解決 `pandas-ta` 套件名稱解析相依性問題，Actions 環境統一指定使用 Python 3.12
+
+**設定步驟：**
+
+1. GitHub Repo → **Settings → Secrets and variables → Actions**
+2. 新增以下兩個 Secret：
+
+| Secret 名稱 | 說明 |
+|-------------|------|
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API 頻道存取權杖 |
+| `LINE_USER_ID` | 接收推播的目標 LINE 使用者 ID |
+
+3. 推送後 Actions 將依排程自動執行，亦可在 Actions 頁面手動觸發 `workflow_dispatch` 進行測試。
+
+**本地端除錯：**
+```bash
+# 使用 test_flex_message.py 在本地預覽 Flex Message 排版，不實際發送至 LINE
+python scripts/test_flex_message.py
+
+# 手動執行完整推播流程（需設定 .env 中的 LINE_CHANNEL_ACCESS_TOKEN / LINE_USER_ID）
+python scripts/daily_line_notify.py
+```
+
+---
+
 ## 歷史數據收集器
 
 Streamlit Cloud 因 IP 封鎖、速率限制等原因有時無法取得完整歷史數據。
@@ -260,6 +311,13 @@ Streamlit Community Cloud 在 **7 天無流量**後自動休眠。本專案使�
 ---
 
 ## 版本紀錄
+
+### v2.1 (2026-02-26)
+
+- **feat(scripts)**: 新增 `scripts/daily_line_notify.py` 與 `scripts/test_flex_message.py`，實作高質感 LINE Flex Message 決策視覺化面板（長週期多空評分進度條、底部探測器、波段雷達五燈獎）。
+- **feat(github)**: 新增 `.github/workflows/daily_line_notify.yml` 排程，支援台灣時間 09:23 與 15:39 每日雙時段自動推播。
+- **feat(market_data)**: 推播腳本內建 Kraken API 穿甲彈備援機制，解決 Binance 阻擋與 Yahoo 限流問題，並支援動態收盤價覆寫以確保指標精準度。
+- **fix(deps)**: 升級 GitHub Actions 環境至 Python 3.12，並修正 `pandas-ta` 套件名稱解析問題。
 
 ### v2.0 (2026-02-25)
 
