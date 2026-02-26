@@ -9,18 +9,33 @@ handler/tab_macro_compass.py  ·  v1.0
   4. 指標評分卡片化 (Level 1-3 Card Layout)
   5. 熊市底部獵人分析 (8 大指標 + 底部驗證圖)
   6. 四季理論目標價預測
+
+Session State 快取：
+  - 主圖表 (tab_mc_fig_main_<hash>)
+  - 底部驗證圖 (tab_mc_fig_hist_<hash>)
+  - 評分走勢圖 (tab_mc_fig_score_<hash>)
+  - 預測圖 (tab_mc_fig_fc_<hash>)
 """
 # 關閉 SSL 驗證警告，避免本地端公司網路環境報錯
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import hashlib
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
+import numpy as np
+from datetime import datetime
 
-# ✅ 修正：只引入確實存在且有用到的函數，根絕 ImportError
-from core.bear_bottom import calculate_bear_bottom_score
-from core.season_forecast import forecast_price
+from service.macro_data import fetch_m2_series, fetch_usdjpy, fetch_us_cpi_yoy, get_quantum_threat_level
+from core.bear_bottom import (
+    calc_ahr999, calc_puell_multiple, calc_mvrv_zscore, calc_pi_cycle_bottom,
+    calc_200wma_diff, calc_realized_price_diff, calc_net_unrealized_profit_loss,
+    calc_cvdd_diff, calculate_bear_bottom_score
+)
+from core.indicators import MACD_Color
+from core.season_forecast import get_seasonal_phase, forecast_price_targets
 
 # 共通卡片樣式設定
 CARD_STYLE = """
@@ -35,22 +50,7 @@ CARD_STYLE = """
 """
 CARD_END = "</div>"
 
-def render(
-    btc: pd.DataFrame, 
-    chart_df: pd.DataFrame, 
-    tvl_hist: pd.DataFrame, 
-    stable_hist: pd.DataFrame, 
-    fund_hist: pd.DataFrame,
-    curr: pd.Series, 
-    dxy: pd.DataFrame, 
-    funding_rate: float, 
-    tvl_val: float,
-    fng_val: float, 
-    fng_state: str, 
-    fng_source: str, 
-    proxies: dict, 
-    realtime_data: dict
-):
+def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: str, proxies: dict):
     """
     Macro Cycle Compass 渲染入口
     """
@@ -83,7 +83,8 @@ def render(
     if rsi_w > 50: tech_score += 20
     else: tech_score -= 20
 
-    # 總經面評分 
+    # 總經面評分 (簡易估算：這部分理想上應從 macro_data 即時獲取並評分)
+    # 這裡暫時以固定值示範，實際應結合 M2, CPI, 利率等計算
     macro_score = 10
 
     # 鏈上/情緒評分
@@ -93,31 +94,16 @@ def render(
     if nupl < 0: onchain_score += 30
     elif nupl > 0.7: onchain_score -= 30
 
-    if funding_rate < 0: onchain_score += 30
-    elif funding_rate > 0.05: onchain_score -= 30
+    fund_rate = proxies.get('funding_rate', 0)
+    if fund_rate < 0: onchain_score += 30
+    elif fund_rate > 0.05: onchain_score -= 30
 
     # 總體多空分數
     total_bull_bear_score = (tech_score * 0.5) + (macro_score * 0.2) + (onchain_score * 0.3)
     total_bull_bear_score = max(-100, min(100, total_bull_bear_score))
 
-    # ✅ 修正：完美對接 season_forecast.py (v1.3) 的預測函數
-    forecast = forecast_price(curr_close, btc)
-    
-    if forecast:
-        si = forecast["season_info"]
-        eff = forecast["effective_season"]
-        # 將季節對應到市場相位與顏色
-        phase_map = {
-            "winter": (1, '#0d47a1'), 
-            "spring": (2, '#2e7d32'), 
-            "summer": (3, '#f57f17'), 
-            "autumn": (5, '#e65100')
-        }
-        phase_num, phase_color = phase_map.get(eff["season"], (1, '#0d47a1'))
-    else:
-        si = {"emoji": "❓", "season_zh": "未知", "month_in_cycle": 0, "cycle_progress": 0}
-        eff = {"emoji": "❓", "season_zh": "未知", "season": "unknown"}
-        phase_num, phase_color = 1, "gray"
+    # 四季相位計算
+    si, eff = get_seasonal_phase(btc, curr_close)
 
     # ──────────────────────────────────────────────────────────────
     # 區塊 1: 頂部儀表板 (油錶 + 相位)
@@ -139,10 +125,10 @@ def render(
                 'borderwidth': 2,
                 'bordercolor': "gray",
                 'steps': [
-                    {'range': [-100, -50], 'color': '#d32f2f'}, 
-                    {'range': [-50, 0], 'color': '#ef5350'},    
-                    {'range': [0, 50], 'color': '#66bb6a'},     
-                    {'range': [50, 100], 'color': '#2e7d32'},   
+                    {'range': [-100, -50], 'color': '#d32f2f'}, # 深紅 (極度看空)
+                    {'range': [-50, 0], 'color': '#ef5350'},    # 淺紅 (看空)
+                    {'range': [0, 50], 'color': '#66bb6a'},     # 淺綠 (看多)
+                    {'range': [50, 100], 'color': '#2e7d32'},   # 深綠 (極度看多)
                 ],
             }
         ))
@@ -151,26 +137,27 @@ def render(
 
     with dash_c2:
         # 市場相位油錶 (1~6 相位)
+        phase_num = eff['phase']
         phase_names = ["1.深熊", "2.初牛", "3.狂暴牛", "4.見頂", "5.初熊", "6.尋底"]
 
         fig_meter2 = go.Figure(go.Indicator(
             mode="gauge+number+delta",
             value=phase_num,
             domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': f"市場狀態: {eff['emoji']} {eff['season_zh']}", 'font': {'size': 16, 'color': 'white'}},
+            title={'text': f"市場相位: {eff['emoji']} {phase_names[phase_num-1]}", 'font': {'size': 16, 'color': 'white'}},
             gauge={
                 'axis': {'range': [1, 6], 'tickmode': 'array', 'tickvals': [1,2,3,4,5,6], 'ticktext': phase_names, 'tickcolor': "white"},
-                'bar': {'color': phase_color},
+                'bar': {'color': eff['color']},
                 'bgcolor': "rgba(0,0,0,0)",
                 'borderwidth': 2,
                 'bordercolor': "gray",
                 'steps': [
-                    {'range': [1, 2], 'color': '#0d47a1'}, 
-                    {'range': [2, 3], 'color': '#2e7d32'}, 
-                    {'range': [3, 4], 'color': '#f57f17'}, 
-                    {'range': [4, 5], 'color': '#d32f2f'}, 
-                    {'range': [5, 6], 'color': '#e65100'}, 
-                    {'range': [6, 7], 'color': '#1565c0'}, 
+                    {'range': [1, 2], 'color': '#0d47a1'}, # 冬 (深熊)
+                    {'range': [2, 3], 'color': '#2e7d32'}, # 春 (初牛)
+                    {'range': [3, 4], 'color': '#f57f17'}, # 夏 (狂暴)
+                    {'range': [4, 5], 'color': '#d32f2f'}, # 夏末秋初 (見頂)
+                    {'range': [5, 6], 'color': '#e65100'}, # 秋 (初熊)
+                    {'range': [6, 7], 'color': '#1565c0'}, # 冬初 (尋底)
                 ],
             }
         ))
@@ -180,7 +167,7 @@ def render(
     st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
-    # 區塊 2: 細項指標評分卡片化 
+    # 區塊 2: 細項指標評分卡片化 (加入卡片外框)
     # ──────────────────────────────────────────────────────────────
     st.markdown("#### 2. 指標監測面板")
     c1, c2, c3 = st.columns(3)
@@ -191,9 +178,15 @@ def render(
         st.markdown("##### 💰 資金與籌碼面")
         st.metric("資金費率 (Funding Rate)", f"{proxies.get('funding_rate', 0):.4f}%")
         
+        # 處理 CEX 資金流向為 0 的情況
         cex_flow = proxies.get('cex_flow', 0)
         cex_status = "⚠️ 數據暫不可用" if cex_flow == 0 else ("交易所淨流出 (吸籌)" if cex_flow < 0 else "交易所淨流入 (拋壓)")
-        st.metric("CEX 資金流向 (24h)", f"{cex_flow:+.0f} BTC", cex_status, delta_color="normal" if cex_flow <= 0 else "inverse")
+        st.metric(
+            "CEX 資金流向 (24h Proxy)", 
+            f"{cex_flow:+.0f} BTC", 
+            cex_status,
+            delta_color="normal" if cex_flow <= 0 else "inverse" # <=0 包含 0 時為預設顏色
+        )
         
         st.metric("穩定幣總市值", f"${proxies.get('stablecoin_mc', 0):,.2f} B")
         st.markdown(CARD_END, unsafe_allow_html=True)
@@ -229,7 +222,19 @@ def render(
     st.markdown("#### 3. 熊市底部獵人 (Bottom Hunter)")
     st.caption("透過 8 大鏈上與技術指標，量化評估當前是否處於歷史大底。分數越高代表越接近絕對底部。")
 
-    bottom_score, signals = calculate_bear_bottom_score(curr)
+    # 計算底部八大指標
+    s_ahr     = calc_ahr999(curr_close, curr.get('AHR999', 1.0))
+    s_puell   = calc_puell_multiple(curr_close, curr.get('Puell_Multiple', 1.0))
+    s_mvrv    = calc_mvrv_zscore(curr_close, curr.get('MVRV_ZScore', 1.0))
+    s_picyc   = calc_pi_cycle_bottom(curr_close, curr.get('Pi_Cycle_Low', 1.0))
+    s_200wma  = calc_200wma_diff(curr_close, curr.get('SMA_200W', 1.0))
+    s_real    = calc_realized_price_diff(curr_close, curr.get('Realized_Price', 1.0))
+    s_nupl    = calc_net_unrealized_profit_loss(curr_close, curr.get('NUPL', 0.5))
+    s_cvdd    = calc_cvdd_diff(curr_close, curr.get('CVDD', 1.0))
+
+    bottom_score, indicators_status = calculate_bear_bottom_score(
+        s_ahr, s_puell, s_mvrv, s_picyc, s_200wma, s_real, s_nupl, s_cvdd
+    )
 
     hunter_c1, hunter_c2 = st.columns([1, 2])
 
@@ -247,10 +252,10 @@ def render(
                 'borderwidth': 2,
                 'bordercolor': "gray",
                 'steps': [
-                    {'range': [0, 30], 'color': '#1e1e1e'},   
-                    {'range': [30, 60], 'color': '#fbc02d'},  
-                    {'range': [60, 80], 'color': '#ff9800'},  
-                    {'range': [80, 100], 'color': '#d32f2f'}, 
+                    {'range': [0, 30], 'color': '#1e1e1e'},   # 安全/高位
+                    {'range': [30, 60], 'color': '#fbc02d'},  # 觀察區
+                    {'range': [60, 80], 'color': '#ff9800'},  # 定投區
+                    {'range': [80, 100], 'color': '#d32f2f'}, # 絕對底部(All-in)
                 ],
             }
         ))
@@ -269,27 +274,22 @@ def render(
         st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.markdown("##### 🔍 八大指標細項狀態")
         
+        # 使用 2x4 的 columns 排版
         col_idx = 0
         cols = st.columns(4)
         
-        for name, data in signals.items():
+        for name, value, status, hit in indicators_status:
             with cols[col_idx % 4]:
-                hit = data['score'] > 0
                 color = "#00e676" if hit else "#757575"
                 icon = "✅" if hit else "❌"
-                if data['value'] == '—':
-                    icon = "⏳"
-                    color = "#aaaaaa"
-                
                 st.markdown(f"""
                 <div style="text-align:center; padding:5px; margin-bottom:10px; border:1px solid {color}; border-radius:5px; background-color:rgba(0,0,0,0.2);">
                     <div style="font-size:0.8rem; color:#aaa;">{name}</div>
-                    <div style="font-size:1.1rem; font-weight:bold; color:{color};">{icon} {data['value']}</div>
-                    <div style="font-size:0.7rem; color:#888;">{data['label']}</div>
+                    <div style="font-size:1.1rem; font-weight:bold; color:{color};">{icon} {value:.2f}</div>
+                    <div style="font-size:0.7rem; color:#888;">{status}</div>
                 </div>
                 """, unsafe_allow_html=True)
             col_idx += 1
-            
         st.markdown(CARD_END, unsafe_allow_html=True)
 
     st.markdown("---")
@@ -302,28 +302,22 @@ def render(
 
     with fc_c1:
         st.markdown(CARD_STYLE, unsafe_allow_html=True)
-        st.markdown(f"##### {si['emoji']} 當前時間季節: **{si['season_zh']}**")
-        st.write(f"減半後第 {si.get('month_in_cycle', 0)} 個月 (週期進度 {si.get('cycle_progress', 0)*100:.1f}%)")
+        st.markdown(f"##### {si['emoji']} 當前季節定調: **{si['name']}**")
+        st.markdown(f"> *{si['desc']}*")
         
-        st.markdown(f"**市場真實狀態**：{eff['emoji']} **{eff['season_zh']}**")
-        
-        # 顯示 v1.3 加入的市場修正警告
-        if forecast and forecast.get("is_season_corrected"):
-            st.warning(forecast.get("correction_reason", "市場狀態已修正"))
-        elif forecast:
-            st.success("目前時間季節與市場真實狀態吻合。")
-            
+        st.markdown(f"**市場相位解析**：目前處於 **Phase {eff['phase']}** ({eff['emoji']} {eff['color_name']})")
+        st.write(f"在四季流轉中，現在的市場特徵表現為：**{eff['desc']}**")
         st.markdown(CARD_END, unsafe_allow_html=True)
 
     with fc_c2:
         st.markdown(CARD_STYLE, unsafe_allow_html=True)
-        st.markdown("##### 🎯 週期目標預測")
-        if forecast:
-            st.metric(forecast.get("bear_label_low", "保守目標"), f"${forecast.get('target_low', 0):,.0f}")
-            st.metric(forecast.get("bear_label_mid", "中位數目標"), f"${forecast.get('target_median', 0):,.0f}")
-            st.metric(forecast.get("bear_label_high", "樂觀目標"), f"${forecast.get('target_high', 0):,.0f}")
-        else:
-            st.write("目前歷史資料不足以進行預測。")
+        st.markdown("##### 🎯 週期目標預測 (基於前高低點外推)")
+        targets = forecast_price_targets(curr_close, si['phase_num'])
+        
+        st.metric("近期阻力 (Target 1)", f"${targets['target_1']:,.0f}", help="短中期的壓力位估算")
+        st.metric("波段目標 (Target 2)", f"${targets['target_2']:,.0f}", help="若突破阻力，下一階段合理目標")
+        st.metric("狂暴牛頂部 (Cycle Top)", f"${targets['cycle_top']:,.0f}", help="依據歷史乘數推算的本輪極限頂部")
+        st.metric("深熊底部 (Cycle Bottom)", f"${targets['cycle_bottom']:,.0f}", help="若市場崩盤，合理的防守大底")
         st.markdown(CARD_END, unsafe_allow_html=True)
 
     # 操作策略建議清單
@@ -339,14 +333,14 @@ def render(
         ("❄️", "冬季 (月36-47)", "#0d47a1",
          "熊市底部期。恐慌拋售為主，適合**定期定額囤幣**，等待下一個春天。"),
     ]
-    for col, (s_emoji, name, bg, desc) in zip(strat_cols, strategies):
-        is_current = (s_emoji == eff["emoji"]) or (s_emoji == si["emoji"])
-        border   = f"2px solid {phase_color}" if is_current else "1px solid #333"
-        cur_tag  = (f"<div style='color:{phase_color};font-size:0.8rem;margin-top:8px;font-weight:600;'>← 當前季節</div>"
+    for col, (emoji, name, bg, desc) in zip(strat_cols, strategies):
+        is_current = name.startswith(eff["emoji"]) or name.startswith(si["emoji"])
+        border   = f"2px solid {eff['color']}" if is_current else "1px solid #333"
+        cur_tag  = (f"<div style='color:{eff['color']};font-size:0.8rem;margin-top:8px;font-weight:600;'>← 當前季節</div>"
                     if is_current else "")
         col.markdown(
             f"""<div style="background:{bg}22;border:{border};border-radius:10px;padding:15px;height:100%;">
-                <h4 style="margin:0;color:{bg}">{s_emoji} {name}</h4>
+                <h4 style="margin:0;color:{bg}">{emoji} {name}</h4>
                 <p style="font-size:0.9rem;color:#ddd;margin-top:10px;">{desc}</p>
                 {cur_tag}
             </div>""",
