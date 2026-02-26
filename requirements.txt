@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
-pandas-ta
+pandas_ta
 plotly
 yfinance
 ccxt
@@ -15,4 +15,5 @@ python-dotenv
 line-bot-sdk
 # [Task #10] 單元測試框架
 pytest
+
 
