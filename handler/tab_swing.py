@@ -238,59 +238,117 @@ def render(btc, curr, funding_rate, proxies,
     macd_val   = curr.get('MACD_12_26_9') or curr.get('MACD', 0)
     macd_sig   = curr.get('MACDs_12_26_9') or curr.get('MACD_Signal', 0)
     bull_macd  = (macd_val is not None and macd_sig is not None
-                  and macd_val == macd_val and macd_sig == macd_sig
+                  and pd.notna(macd_val) and pd.notna(macd_sig)
                   and float(macd_val) > float(macd_sig))
 
     adx_val      = curr.get('ADX', 0) or 0
     adx_trending = float(adx_val) > 20
     above_ema20  = curr['close'] >= curr['EMA_20']
 
+    # 內部 Helper 函式：產生帶有外框的指標卡片
+    def make_condition_card(title, is_pass, pass_text="✅ 通過", fail_text="❌ 未通過", extra_text=""):
+        if is_pass:
+            color = "#00e676"  # 亮綠色
+            status_text = pass_text
+        else:
+            color = "#ffeb3b" if "⚠️" in fail_text else "#ff1744"  # 警告黃或亮紅
+            status_text = fail_text
+            
+        if extra_text:
+            status_text += f" {extra_text}"
+            
+        return f"""
+        <div style="
+            background-color: #2b2b2b;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        ">
+            <div style="font-size: 13px; color: #aaaaaa; margin-bottom: 8px;">{title}</div>
+            <div style="font-size: 16px; font-weight: bold; color: {color};">{status_text}</div>
+        </div>
+        """
+
     st.markdown("#### 🟢 進場條件 (以下 6 項全數通過即觸發買進)")
     
-    # 將進場條件改為 2 列 x 3 欄的 metric 儀表板設計，漂亮且易讀
     r1c1, r1c2, r1c3 = st.columns(3)
     r2c1, r2c2, r2c3 = st.columns(3)
 
-    r1c1.metric("① 趨勢向上 (Price > MA200)", "✅ 通過" if bull_ma else "❌ 未通過")
-    r1c2.metric("② 動能偏多 (RSI_14 > 50)", "✅ 通過" if bull_rsi else "❌ 未通過")
-    r1c3.metric("③ MACD金叉 (> Signal)", "✅ 通過" if bull_macd else "❌ 未通過")
+    # 將原先的 metric 改為使用 Card UI 渲染
+    with r1c1:
+        st.markdown(make_condition_card("① 趨勢向上 (Price > MA200)", bull_ma), unsafe_allow_html=True)
+    with r1c2:
+        st.markdown(make_condition_card("② 動能偏多 (RSI_14 > 50)", bull_rsi), unsafe_allow_html=True)
+    with r1c3:
+        st.markdown(make_condition_card("③ MACD金叉 (> Signal)", bull_macd), unsafe_allow_html=True)
     
-    r2c1.metric("④ 趨勢成型 (ADX > 20)", f"✅ 通過 ({adx_val:.1f})" if adx_trending else f"❌ 盤整 ({adx_val:.1f})")
-    r2c2.metric("⑤ 資金健康 (費率 < 0.05%)", "✅ 通過" if not_overheated else "⚠️ 過熱")
-    r2c3.metric("⑥ 站上短均 (Price ≥ EMA20)", "✅ 通過" if above_ema20 else "❌ 未達標")
+    with r2c1:
+        st.markdown(make_condition_card("④ 趨勢成型 (ADX > 20)", adx_trending, extra_text=f"({adx_val:.1f})", fail_text="❌ 盤整"), unsafe_allow_html=True)
+    with r2c2:
+        st.markdown(make_condition_card("⑤ 資金健康 (費率 < 0.05%)", not_overheated, fail_text="⚠️ 過熱"), unsafe_allow_html=True)
+    with r2c3:
+        st.markdown(make_condition_card("⑥ 站上短均 (Price ≥ EMA20)", above_ema20, fail_text="❌ 未達標"), unsafe_allow_html=True)
 
     can_long = bull_ma and bull_rsi and bull_macd and adx_trending and not_overheated and above_ema20
 
     st.markdown("#### 🔴 出場條件")
     is_exit = curr['close'] < curr.get(exit_ma_key, curr['close'])
     e_col1, e_col2, e_col3 = st.columns(3)
-    e_col1.metric(f"① 跌破防守線 (Price < {exit_ma_key})", "🔴 觸發出場" if is_exit else "✅ 安全 (未跌破)")
+    with e_col1:
+        st.markdown(make_condition_card(f"① 跌破防守線 (Price < {exit_ma_key})", not is_exit, pass_text="✅ 安全 (未跌破)", fail_text="🔴 觸發出場"), unsafe_allow_html=True)
+
+    # ──────────────────────────────────────────────────────────────
+    # 新增：綜合波段策略建議區塊
+    # ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 💡 策略建議")
     
+    is_bull_trend = bull_ma
+    ema_dist = (curr['close'] / curr['EMA_20'] - 1) * 100
+    rsi = curr.get('RSI_14', 50)
+    
+    # 安全取得 MACD 數值避免 None 報錯
+    macd_safe = float(macd_val) if (macd_val is not None and pd.notna(macd_val)) else 0.0
+    macd_sig_safe = float(macd_sig) if (macd_sig is not None and pd.notna(macd_sig)) else 0.0
+
+    if is_bull_trend:
+        if 0 <= ema_dist <= 1.5 and rsi > 50 and macd_safe > macd_sig_safe and adx_val > 20:
+            swing_advice = "🚀 動能共振！絕佳進場買點"
+            swing_advice_color = "#00ff88"
+        elif ema_dist > 1.5:
+            swing_advice = "📈 趨勢偏多，但乖離過大不宜追高"
+            swing_advice_color = "#ffeb3b"
+        else:
+            swing_advice = "🟡 多頭排列，等待動能指標轉強"
+            swing_advice_color = "#ffeb3b"
+    else:
+        if ema_dist < 0:
+            swing_advice = "❄️ 跌破短期均線，建議觀望"
+            swing_advice_color = "#ff4b4b"
+        else:
+            swing_advice = "⚪ 趨勢偏弱，空頭或震盪格局"
+            swing_advice_color = "#aaaaaa"
+
+    # 建議顯示渲染
+    st.markdown(f"""
+    <div style="
+        background-color: {swing_advice_color}1a;
+        border: 1px solid {swing_advice_color};
+        border-radius: 8px;
+        padding: 15px;
+        text-align: center;
+        margin-top: 10px;
+    ">
+        <h4 style="color: {swing_advice_color}; margin: 0; font-weight: bold;">{swing_advice}</h4>
+    </div>
+    """, unsafe_allow_html=True)
+
     st.markdown(CARD_END, unsafe_allow_html=True)
 
     # ── 未平倉量 (Open Interest) 顯示區塊 (加入卡片外框) ──
-    if open_interest is not None:
-        st.markdown(CARD_STYLE, unsafe_allow_html=True)
-        st.markdown("##### 📊 BTC 永續合約未平倉量 (Open Interest)")
-        oi_col1, oi_col2, oi_col3 = st.columns(3)
-
-        oi_col1.metric("未平倉量 (OI)", f"{open_interest:,.0f} BTC")
-        if open_interest_usd is not None:
-            oi_col2.metric("OI 市值", f"${open_interest_usd:.2f} 億")
-
-        if oi_change_pct is not None:
-            oi_trend = "建倉增加 ↑" if oi_change_pct > 0.5 else ("平倉減少 ↓" if oi_change_pct < -0.5 else "橫盤震盪 →")
-            oi_col3.metric(
-                label="OI 60s 變化",
-                value=f"{oi_change_pct:+.3f}%",
-                delta=oi_trend,
-                delta_color="normal" if oi_change_pct >= 0 else "inverse",
-            )
-        else:
-            oi_col3.metric("OI 60s 變化", "等待下次刷新")
-        st.markdown(CARD_END, unsafe_allow_html=True)
-
-    st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
     # B & C: 智能進出場 + 動態止損
