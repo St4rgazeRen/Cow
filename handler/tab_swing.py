@@ -8,6 +8,7 @@ Tab 2: 波段狙擊 — Antigravity v4 核心策略引擎
     Row 2: RSI_14 + 超買/超賣線 + 50 中線
     Row 3: MACD 直方圖 + Signal Line (趨勢動能確認)
 - [Task #7] Session State 快取：圖表按 (btc.index[-1], len(btc), exit_ma) hash 快取
+- 卡片化 UI 升級與 CEX 資金流向防呆處理
 """
 # 關閉 SSL 驗證警告，避免本地端公司網路環境報錯
 import urllib3
@@ -20,13 +21,24 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
+# 共通卡片樣式設定
+CARD_STYLE = """
+<div style="
+    background-color: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 10px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+">
+"""
+CARD_END = "</div>"
 
 def _make_swing_cache_key(btc: pd.DataFrame, exit_ma_key: str) -> str:
     """Tab 2 圖表快取鍵，基於 BTC 最後一筆時間戳、總長度與出場均線選擇"""
     last_idx = str(btc.index[-1]) if not btc.empty else "empty"
     raw = f"{last_idx}|{len(btc)}|{exit_ma_key}"
     return hashlib.md5(raw.encode()).hexdigest()[:16]
-
 
 def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> go.Figure:
     """
@@ -213,8 +225,9 @@ def render(btc, curr, funding_rate, proxies,
     st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
-    # A. 策略條件監控 (儀表板美化版：2列 x 3欄)
+    # A. 策略條件監控 (儀表板美化版：2列 x 3欄 + 卡片外框)
     # ──────────────────────────────────────────────────────────────
+    st.markdown(CARD_STYLE, unsafe_allow_html=True)
     st.subheader("A. 策略條件監控 (進出場邏輯)")
 
     # 條件計算
@@ -252,9 +265,12 @@ def render(btc, curr, funding_rate, proxies,
     is_exit = curr['close'] < curr.get(exit_ma_key, curr['close'])
     e_col1, e_col2, e_col3 = st.columns(3)
     e_col1.metric(f"① 跌破防守線 (Price < {exit_ma_key})", "🔴 觸發出場" if is_exit else "✅ 安全 (未跌破)")
+    
+    st.markdown(CARD_END, unsafe_allow_html=True)
 
-    # ── 未平倉量 (Open Interest) 顯示區塊 ──
+    # ── 未平倉量 (Open Interest) 顯示區塊 (加入卡片外框) ──
     if open_interest is not None:
+        st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.markdown("##### 📊 BTC 永續合約未平倉量 (Open Interest)")
         oi_col1, oi_col2, oi_col3 = st.columns(3)
 
@@ -272,6 +288,7 @@ def render(btc, curr, funding_rate, proxies,
             )
         else:
             oi_col3.metric("OI 60s 變化", "等待下次刷新")
+        st.markdown(CARD_END, unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -286,12 +303,17 @@ def render(btc, curr, funding_rate, proxies,
     risk_dist_pct = (curr['close'] - stop_price) / curr['close']
 
     with logic_col1:
+        st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.subheader("B. 智能進出場 (Entries & Exits)")
-        cex_flow = proxies['cex_flow']
+        
+        # 修正 CEX 資金流向防呆處理 (0 的情況)
+        cex_flow = proxies.get('cex_flow', 0)
+        cex_status = "⚠️ 數據暫不可用" if cex_flow == 0 else ("交易所淨流出 (吸籌)" if cex_flow < 0 else "交易所淨流入 (拋壓)")
         st.metric(
-            "CEX 資金流向 (24h Proxy)", f"{cex_flow:+.0f} BTC",
-            "交易所淨流出 (吸籌)" if cex_flow < 0 else "交易所淨流入 (拋壓)",
-            delta_color="normal" if cex_flow < 0 else "inverse",
+            "CEX 資金流向 (24h Proxy)", 
+            f"{cex_flow:+.0f} BTC", 
+            cex_status,
+            delta_color="normal" if cex_flow <= 0 else "inverse",
         )
         
         m_col1, m_col2 = st.columns(2)
@@ -307,11 +329,14 @@ def render(btc, curr, funding_rate, proxies,
         else:
             st.info("🔵 **持倉續抱 / 觀望 (HOLD / WAIT)**\n\n等待明確進出場信號。")
             st.metric("波段防守價", f"${stop_price:,.0f}", f"{exit_ma_key}")
+            
+        st.markdown(CARD_END, unsafe_allow_html=True)
 
     with logic_col2:
+        st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.subheader("C. 動態止損 & 清算地圖")
         st.caption("🔥 鏈上清算熱區 (Liquidation Clusters)")
-        for heat in proxies['liq_map']:
+        for heat in proxies.get('liq_map', []):
             st.markdown(f"- **${heat['price']:,.0f}** ({heat['side']} {heat['vol']})")
 
         st.metric(
@@ -331,12 +356,15 @@ def render(btc, curr, funding_rate, proxies,
         if 'J' in curr:
             i2.metric("KDJ(J)", f"{curr['J']:.1f}",
                       "超買" if curr['J'] > 80 else ("超賣" if curr['J'] < 20 else "中性"))
+                      
+        st.markdown(CARD_END, unsafe_allow_html=True)
 
     st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
     # D. 倉位計算機 (Risk Calculator)
     # ──────────────────────────────────────────────────────────────
+    st.markdown(CARD_STYLE, unsafe_allow_html=True)
     st.subheader("D. 倉位計算機 (Risk Calculator)")
 
     d_cap_col, d_risk_col = st.columns(2)
@@ -380,3 +408,5 @@ def render(btc, curr, funding_rate, proxies,
             else:
                 res_col1.metric("建議開倉", f"{pos_size_btc:.4f} BTC", f"總值 ${pos_size_usdt:,.0f}")
                 res_col2.metric("槓桿倍數", f"{leverage:.2f}x", "安全範圍")
+                
+    st.markdown(CARD_END, unsafe_allow_html=True)
