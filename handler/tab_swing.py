@@ -4,7 +4,7 @@ Tab 2: 波段狙擊 — Antigravity v4 核心策略引擎
 
 視覺化增強（UI Improvement）:
 - 頁面頂部加入 3 行式 Plotly 圖表：
-    Row 1: K線 (90日) + EMA20 + Bollinger Bands + 進場甜蜜點高亮
+    Row 1: K線 (90日) + EMA20 + Bollinger Bands + 進場甜蜜點高亮 + SMA50防守線
     Row 2: RSI_14 + 超買/超賣線 + 50 中線
     Row 3: MACD 直方圖 + Signal Line (趨勢動能確認)
 - [Task #7] Session State 快取：圖表按 (btc.index[-1], len(btc)) hash 快取，
@@ -30,14 +30,14 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
     建立波段策略技術分析圖（3 行子圖）。
     僅在快取未命中時呼叫，耗時約 100-200ms。
 
-    Row 1: K線 (近 90 日) + EMA20 + BB 帶 + 進場區高亮
+    Row 1: K線 (近 90 日) + EMA20 + SMA50 + BB 帶 + 進場區高亮
     Row 2: RSI_14 + 超買 (70) / 超賣 (30) / 中線 (50)
     Row 3: MACD 直方圖 + Signal Line
     """
     # 取最近 90 天數據，圖表不宜過長
     df = btc.tail(90).copy()
 
-    # 判斷進場甜蜜點（五合一過濾）
+    # 判斷進場甜蜜點（與回測同步：解除最大乖離限制，抓突破與趨勢確認）
     dist_pct = (df['close'] / df['EMA_20'] - 1) * 100
     macd_cond = (
         (df['MACD_12_26_9'] > df['MACDs_12_26_9']).fillna(False)
@@ -45,10 +45,12 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
         else pd.Series(True, index=df.index)
     )
     adx_cond = (df['ADX'] > 20).fillna(False) if 'ADX' in df.columns else pd.Series(True, index=df.index)
+    
+    # 只要多頭指標符合，且價格大於等於 EMA20 即符合進場條件
     entry_zone = (
         (df['close'] > df['SMA_200']) &
         (df['RSI_14'] > 50) &
-        (dist_pct >= 0) & (dist_pct <= 1.5) &
+        (dist_pct >= 0) & 
         macd_cond & adx_cond
     )
 
@@ -73,11 +75,18 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
         decreasing_line_color='#ef5350',
     ), row=1, col=1)
 
-    # EMA 20（核心均線，進出場依據）
+    # EMA 20（核心均線，進場依據）
     fig.add_trace(go.Scatter(
         x=df.index, y=df['EMA_20'],
         line=dict(color='#ffeb3b', width=2), name='EMA 20',
     ), row=1, col=1)
+
+    # SMA 50（波段防守線，出場依據）
+    if 'SMA_50' in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['SMA_50'],
+            line=dict(color='#00e5ff', width=1.5, dash='dash'), name='SMA 50 (防守線)',
+        ), row=1, col=1)
 
     # SMA 200（趨勢濾網）
     fig.add_trace(go.Scatter(
@@ -108,20 +117,21 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series) -> go.Figure:
             marker=dict(color='#00e5ff', symbol='triangle-up', size=12, opacity=0.85),
         ), row=1, col=1)
 
-    # 跌破 EMA20 出場標記（紅色三角向下）
-    below_ema = df[df['close'] < df['EMA_20']]
-    if not below_ema.empty:
-        # 只標記連續跌破的首日（避免密集標記）
-        exit_mask = below_ema.index.isin(
-            below_ema.index[np.diff(np.where(df['close'] < df['EMA_20'])[0], prepend=-2) > 1]
-        )
-        exit_pts = below_ema[exit_mask]
-        if not exit_pts.empty:
-            fig.add_trace(go.Scatter(
-                x=exit_pts.index, y=exit_pts['high'] * 1.003,
-                mode='markers', name='出場信號 🔴',
-                marker=dict(color='#ff4b4b', symbol='triangle-down', size=10, opacity=0.8),
-            ), row=1, col=1)
+    # 跌破 SMA50 出場標記（與回測同步，紅色三角向下）
+    if 'SMA_50' in df.columns:
+        below_sma50 = df[df['close'] < df['SMA_50']]
+        if not below_sma50.empty:
+            # 只標記連續跌破的首日（避免密集標記）
+            exit_mask = below_sma50.index.isin(
+                below_sma50.index[np.diff(np.where(df['close'] < df['SMA_50'])[0], prepend=-2) > 1]
+            )
+            exit_pts = below_sma50[exit_mask]
+            if not exit_pts.empty:
+                fig.add_trace(go.Scatter(
+                    x=exit_pts.index, y=exit_pts['high'] * 1.003,
+                    mode='markers', name='出場信號 🔴 (破 SMA50)',
+                    marker=dict(color='#ff4b4b', symbol='triangle-down', size=10, opacity=0.8),
+                ), row=1, col=1)
 
     # ── Row 2: RSI_14 ──
     if 'RSI_14' in df.columns:
@@ -227,22 +237,16 @@ def render(btc, curr, funding_rate, proxies,
     f_col5.markdown(f"**⑤ 費率 < 0.05%**\n{'✅ 通過' if not_overheated else '⚠️ 過熱'}")
 
     # ── [Task 3] 未平倉量 (Open Interest) 顯示區塊 ──
-    # OI 是衡量趨勢延續性的重要衍生品指標：
-    #   OI ↑ + 價格 ↑ → 多頭持續建倉，趨勢強勁
-    #   OI ↑ + 價格 ↓ → 空頭建倉，可能加速下跌
-    #   OI ↓          → 平倉去槓桿，趨勢動能減弱
     if open_interest is not None:
         st.markdown("##### 📊 BTC 永續合約未平倉量 (Open Interest)")
         oi_col1, oi_col2, oi_col3 = st.columns(3)
 
-        # Metric 1: OI 總量（BTC 顆數）
         oi_col1.metric(
             label="未平倉量 (OI)",
             value=f"{open_interest:,.0f} BTC",
             help="幣安 BTC/USDT 永續合約當前未平倉合約總量（以 BTC 計）",
         )
 
-        # Metric 2: OI 美元市值（億 USD）
         if open_interest_usd is not None:
             oi_col2.metric(
                 label="OI 市值",
@@ -250,9 +254,7 @@ def render(btc, curr, funding_rate, proxies,
                 help="未平倉量以美元計算（顆數 × 現價 ÷ 1億）",
             )
 
-        # Metric 3: OI 60 秒變化率，正負色顯示
         if oi_change_pct is not None:
-            # 判斷 OI 趨勢的語義標籤
             if oi_change_pct > 0.5:
                 oi_trend = "建倉增加 ↑"
             elif oi_change_pct < -0.5:
@@ -264,19 +266,16 @@ def render(btc, curr, funding_rate, proxies,
                 label="OI 60s 變化",
                 value=f"{oi_change_pct:+.3f}%",
                 delta=oi_trend,
-                # delta_color: OI 增加（建倉）視為正面信號（綠色），減少為警示（紅色）
                 delta_color="normal" if oi_change_pct >= 0 else "inverse",
                 help="與上次快取（約60秒前）相比的 OI 變化率。正值=市場建倉，負值=去槓桿平倉",
             )
         else:
-            # OI 變化率尚無前次數據（第一次載入），顯示提示
             oi_col3.metric(
                 label="OI 60s 變化",
                 value="等待下次刷新",
                 help="第一次載入無法計算變化率，刷新後即可顯示",
             )
     else:
-        # OI 抓取失敗（如網路問題或 API 限制），顯示降級提示
         st.caption("⚠️ 未平倉量數據暫不可用（Binance Futures API 連線異常）")
 
     can_long = bull_ma and bull_rsi and bull_macd and adx_trending and not_overheated
@@ -288,13 +287,14 @@ def render(btc, curr, funding_rate, proxies,
     st.markdown("---")
 
     # ──────────────────────────────────────────────────────────────
-    # B & C: 智能進出場 + 動態止損
+    # B & C: 智能進出場 + 動態止損 (改為 SMA50 防守)
     # ──────────────────────────────────────────────────────────────
     logic_col1, logic_col2 = st.columns(2)
     ema_20       = curr['EMA_20']
+    sma_50       = curr.get('SMA_50', curr['close'])  # 防守均線
     dist_pct     = (curr['close'] / ema_20 - 1) * 100
     atr_val      = curr['ATR']
-    stop_price   = ema_20 - (2.0 * atr_val)
+    stop_price   = sma_50  # 止損點改設在 SMA50
     risk_dist_pct = (curr['close'] - stop_price) / curr['close']
 
     with logic_col1:
@@ -305,20 +305,21 @@ def render(btc, curr, funding_rate, proxies,
             "交易所淨流出 (吸籌)" if cex_flow < 0 else "交易所淨流入 (拋壓)",
             delta_color="normal" if cex_flow < 0 else "inverse",
         )
-        st.metric("EMA 20", f"${ema_20:,.0f}", f"乖離率 {dist_pct:.2f}%")
+        
+        m_col1, m_col2 = st.columns(2)
+        m_col1.metric("EMA 20 (進場線)", f"${ema_20:,.0f}", f"乖離率 {dist_pct:.2f}%")
+        m_col2.metric("SMA 50 (防守線)", f"${sma_50:,.0f}")
 
-        if curr['close'] < ema_20:
-            st.error("🔴 **賣出訊號 (SELL)**\n\n跌破均線，短期趨勢轉弱。")
+        # 邏輯更新：跌破 SMA50 才賣，進場不限最大乖離
+        if curr['close'] < sma_50:
+            st.error("🔴 **賣出訊號 (SELL)**\n\n跌破波段防守線 (SMA50)，趨勢轉弱。")
             st.metric("建議回補價", f"${curr['BB_Lower']:,.0f}", "布林下軌支撐")
-        elif can_long and (0 <= dist_pct <= 1.5):
-            st.success("🟢 **買進訊號 (BUY)**\n\n甜蜜點！趨勢向上且回踩均線。")
+        elif can_long and dist_pct >= 0:
+            st.success("🟢 **買進訊號 (BUY)**\n\n多頭動能確認且價格站上 EMA20！")
             st.metric("建議止盈價", f"${curr['BB_Upper']:,.0f}", "布林上軌壓力")
-        elif dist_pct > 3.0:
-            st.warning(f"🟡 **乖離過大 (WAIT)**\n\n已偏離 {dist_pct:.2f}%，勿追高。")
-            st.metric("建議接回價", f"${ema_20:,.0f}", "EMA 20")
         else:
-            st.info("🔵 **持倉續抱 (HOLD)**\n\n趨勢延續中。")
-            st.metric("下行防守價", f"${ema_20:,.0f}", "趨勢生命線")
+            st.info("🔵 **持倉續抱 / 觀望 (HOLD / WAIT)**\n\n等待明確進出場信號。")
+            st.metric("波段防守價", f"${sma_50:,.0f}", "SMA 50")
 
     with logic_col2:
         st.subheader("C. 動態止損 & 清算地圖")
@@ -327,7 +328,7 @@ def render(btc, curr, funding_rate, proxies,
             st.markdown(f"- **${heat['price']:,.0f}** ({heat['side']} {heat['vol']})")
 
         st.metric(
-            "建議止損價 (EMA20 - 2ATR)", f"${stop_price:,.0f}",
+            "建議防守價 (SMA50)", f"${stop_price:,.0f}",
             f"預計虧損幅度 -{risk_dist_pct * 100:.2f}%",
         )
         if risk_dist_pct < 0:

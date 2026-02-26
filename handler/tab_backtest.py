@@ -48,7 +48,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
     ])
 
     # ══════════════════════════════════════════════════════════════
-    # Sub-Tab 1: 波段策略 PnL（含可調參數面板 + 最佳化）
+    # Sub-Tab 1: 波段策略 PnL（已移除最大乖離限制）
     # ══════════════════════════════════════════════════════════════
     with bt_tab1:
         st.markdown("#### 📉 波段策略驗證 (自訂區間 PnL)")
@@ -76,14 +76,10 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
             st.markdown("**進場條件調整**")
             dist_min = st.slider(
                 "EMA20 最小乖離 (%)",
-                min_value=0.0, max_value=1.0, value=0.0, step=0.1,
-                help="收盤價高於 EMA20 的最小百分比偏差（0 = 貼近 EMA20）",
+                min_value=0.0, max_value=2.0, value=0.0, step=0.1,
+                help="收盤價高於 EMA20 的最小百分比偏差（0 = 只要站上 EMA20 即符合）",
             )
-            dist_max = st.slider(
-                "EMA20 最大乖離 (%)",
-                min_value=0.5, max_value=5.0, value=1.5, step=0.1,
-                help="超過此乖離率視為追高，不進場",
-            )
+            # 已移除「最大乖離」滑桿
             rsi_thresh = st.slider(
                 "RSI 動能閾值",
                 min_value=40, max_value=65, value=50, step=1,
@@ -113,10 +109,10 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                     st.error("結束日期必須晚於開始日期")
                 else:
                     with st.spinner("正在模擬交易..."):
+                        # 呼叫回測引擎 (已移除 entry_dist_max_pct)
                         trades, final_val, roi, num_trades, mdd, stats = run_swing_strategy_backtest(
                             btc, start_d, end_d, init_cap,
                             entry_dist_min_pct=dist_min,
-                            entry_dist_max_pct=dist_max,
                             rsi_min=rsi_thresh,
                             adx_min=adx_thresh,
                         )
@@ -144,10 +140,12 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             x=sub_df.index, y=sub_df['close'],
                             mode='lines', name='Price', line=dict(color='gray', width=1),
                         ))
-                        fig.add_trace(go.Scatter(
-                            x=sub_df.index, y=sub_df['EMA_20'],
-                            mode='lines', name='EMA 20', line=dict(color='yellow', width=1),
-                        ))
+                        # 改畫 SMA50，因為現在出場看這條
+                        if 'SMA_50' in sub_df.columns:
+                            fig.add_trace(go.Scatter(
+                                x=sub_df.index, y=sub_df['SMA_50'],
+                                mode='lines', name='SMA 50 (防守線)', line=dict(color='yellow', width=1, dash='dash'),
+                            ))
                         if not trades.empty:
                             buys  = trades[trades['Type'] == 'Buy']
                             sells = trades[trades['Type'] == 'Sell']
@@ -173,23 +171,20 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             )
 
             # ──────────────────────────────────────────────────────
-            # 最佳化功能
+            # 最佳化功能 (移除最大乖離維度，大幅加速)
             # ──────────────────────────────────────────────────────
             if run_optimize:
                 if start_d >= end_d:
                     st.error("結束日期必須晚於開始日期")
                 else:
-                    st.info("🔬 開始網格搜尋，掃描參數組合中...（約需 10-30 秒）")
+                    st.info("🔬 開始網格搜尋，掃描參數組合中...")
 
-                    # 搜尋網格
+                    # 搜尋網格 (減少維度)
                     dist_min_range  = [0.0, 0.2, 0.5]
-                    dist_max_range  = [1.0, 1.5, 2.0, 3.0]
                     rsi_range       = [45, 50, 55]
                     adx_range       = [15, 20, 25]
 
-                    grid = list(itertools.product(dist_min_range, dist_max_range, rsi_range, adx_range))
-                    # 過濾 min >= max 的無效組合
-                    grid = [(a, b, c, d) for a, b, c, d in grid if a < b]
+                    grid = list(itertools.product(dist_min_range, rsi_range, adx_range))
 
                     best_params = None
                     best_metric_val = -float('inf')
@@ -198,18 +193,16 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                     progress_bar = st.progress(0)
                     total = len(grid)
 
-                    for i, (dmin, dmax, rsi, adx) in enumerate(grid):
+                    for i, (dmin, rsi, adx) in enumerate(grid):
                         _, fval, roi_v, ntrades, _, sts = run_swing_strategy_backtest(
                             btc, start_d, end_d, init_cap,
                             entry_dist_min_pct=dmin,
-                            entry_dist_max_pct=dmax,
                             rsi_min=rsi,
                             adx_min=adx,
                         )
                         target_val = sts.get('win_rate', 0) if "勝率" in opt_metric else roi_v
                         results.append({
                             "EMA乖離Min(%)": dmin,
-                            "EMA乖離Max(%)": dmax,
                             "RSI閾值": rsi,
                             "ADX閾值": adx,
                             "勝率(%)": round(sts.get('win_rate', 0), 1),
@@ -221,7 +214,6 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             best_metric_val = target_val
                             best_params = {
                                 "EMA乖離Min(%)": dmin,
-                                "EMA乖離Max(%)": dmax,
                                 "RSI閾值": rsi,
                                 "ADX閾值": adx,
                                 "勝率(%)": round(sts.get('win_rate', 0), 1),
@@ -236,15 +228,13 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                     if best_params:
                         st.success(f"✅ 找到最佳參數！（最佳化目標：{opt_metric}）")
                         bp_cols = st.columns(4)
-                        bp_cols[0].metric("EMA乖離區間", f"{best_params['EMA乖離Min(%)']}% – {best_params['EMA乖離Max(%)']}%")
+                        bp_cols[0].metric("EMA乖離Min", f"{best_params['EMA乖離Min(%)']}%")
                         bp_cols[1].metric("RSI 閾值",    f"{best_params['RSI閾值']}")
                         bp_cols[2].metric("ADX 閾值",    f"{best_params['ADX閾值']}")
                         bp_cols[3].metric("勝率 / ROI",  f"{best_params['勝率(%)']}% / {best_params['總報酬ROI(%)']:+.1f}%")
-                        st.info(f"💡 共掃描 **{len(results)}** 組參數組合，以上為「{opt_metric}」最優解（交易次數 ≥ 3）。")
                     else:
                         st.warning("⚠️ 在所有參數組合中，交易次數均不足 3 次，無法評估。請調整日期範圍。")
 
-                    # 展示所有結果 Top 10
                     results_df = pd.DataFrame(results)
                     sort_col   = "勝率(%)" if "勝率" in opt_metric else "總報酬ROI(%)"
                     results_df = results_df.sort_values(sort_col, ascending=False).head(10)

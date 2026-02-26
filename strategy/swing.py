@@ -44,7 +44,6 @@ def run_swing_strategy_backtest(
     initial_capital=10_000,
     fee_rate=DEFAULT_FEE_RATE,
     slippage_rate=DEFAULT_SLIPPAGE_RATE,
-    entry_dist_min_pct: float = None,
     entry_dist_max_pct: float = None,
     rsi_min: int = None,
     adx_min: int = None,
