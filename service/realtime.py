@@ -51,13 +51,19 @@ def fetch_realtime_data():
         "oi_change_pct": None,      
     }
 
-    # 1. Binance 數據 (棄用 ccxt，改用 requests 以強制套用 verify=SSL_VERIFY)
+    # 建立偽裝的 Headers，避免被幣安等 API 的反爬蟲機制 (WAF) 阻擋
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    # 1. Binance 數據 (棄用 ccxt，改用 requests 以強制套用 verify=SSL_VERIFY 與 headers)
     try:
         # 取得現貨最新價格
         r_price = requests.get(
             "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", 
             timeout=5, 
-            verify=SSL_VERIFY
+            verify=SSL_VERIFY,
+            headers=headers  # 加入偽裝 Header
         )
         if r_price.status_code == 200:
             data['price'] = float(r_price.json()['price'])
@@ -68,17 +74,19 @@ def fetch_realtime_data():
             r_fr = requests.get(
                 "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT", 
                 timeout=5, 
-                verify=SSL_VERIFY
+                verify=SSL_VERIFY,
+                headers=headers  # 加入偽裝 Header
             )
             if r_fr.status_code == 200:
-                # API 回傳的 lastFundingRate 是小數 (例如 0.0001 代表 0.01%)
+                # API 回傳的 lastFundingRate 是小數 (例如 0.000012 代表 0.0012%)
                 data['funding_rate'] = float(r_fr.json()['lastFundingRate']) * 100
 
             # 未平倉量 (Open Interest 端點)
             r_oi = requests.get(
                 "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT", 
                 timeout=5, 
-                verify=SSL_VERIFY
+                verify=SSL_VERIFY,
+                headers=headers  # 加入偽裝 Header
             )
             if r_oi.status_code == 200:
                 current_oi = float(r_oi.json()['openInterest'])
@@ -105,7 +113,12 @@ def fetch_realtime_data():
 
     # 2. DeFiLlama
     try:
-        r = requests.get("https://api.llama.fi/v2/chains", timeout=5, verify=SSL_VERIFY)
+        r = requests.get(
+            "https://api.llama.fi/v2/chains", 
+            timeout=5, 
+            verify=SSL_VERIFY,
+            headers=headers
+        )
         if r.status_code == 200:
             for c in r.json():
                 if c['name'] == 'Bitcoin':
@@ -116,6 +129,7 @@ def fetch_realtime_data():
             "https://stablecoins.llama.fi/stablecoins?includePrices=true",
             timeout=5,
             verify=SSL_VERIFY,
+            headers=headers
         )
         if r2.status_code == 200:
             total = sum(
@@ -131,7 +145,12 @@ def fetch_realtime_data():
 
     # 3. Fear & Greed
     try:
-        r = requests.get("https://api.alternative.me/fng/", timeout=5, verify=SSL_VERIFY)
+        r = requests.get(
+            "https://api.alternative.me/fng/", 
+            timeout=5, 
+            verify=SSL_VERIFY,
+            headers=headers
+        )
         if r.status_code == 200:
             item = r.json()['data'][0]
             data['fng_value'] = int(item['value'])
