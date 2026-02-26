@@ -29,11 +29,8 @@ import numpy as np
 from datetime import datetime
 
 from service.macro_data import fetch_m2_series, fetch_usdjpy, fetch_us_cpi_yoy, get_quantum_threat_level
-from core.bear_bottom import (
-    calc_ahr999, calc_puell_multiple, calc_mvrv_zscore, calc_pi_cycle_bottom,
-    calc_200wma_diff, calc_realized_price_diff, calc_net_unrealized_profit_loss,
-    calc_cvdd_diff, calculate_bear_bottom_score
-)
+# ✅ 修正：移除不存在的獨立計算函式，只引入整合後的 calculate_bear_bottom_score
+from core.bear_bottom import calculate_bear_bottom_score
 from core.indicators import MACD_Color
 from core.season_forecast import get_seasonal_phase, forecast_price_targets
 
@@ -84,7 +81,6 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
     else: tech_score -= 20
 
     # 總經面評分 (簡易估算：這部分理想上應從 macro_data 即時獲取並評分)
-    # 這裡暫時以固定值示範，實際應結合 M2, CPI, 利率等計算
     macro_score = 10
 
     # 鏈上/情緒評分
@@ -185,7 +181,7 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
             "CEX 資金流向 (24h Proxy)", 
             f"{cex_flow:+.0f} BTC", 
             cex_status,
-            delta_color="normal" if cex_flow <= 0 else "inverse" # <=0 包含 0 時為預設顏色
+            delta_color="normal" if cex_flow <= 0 else "inverse"
         )
         
         st.metric("穩定幣總市值", f"${proxies.get('stablecoin_mc', 0):,.2f} B")
@@ -222,19 +218,8 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
     st.markdown("#### 3. 熊市底部獵人 (Bottom Hunter)")
     st.caption("透過 8 大鏈上與技術指標，量化評估當前是否處於歷史大底。分數越高代表越接近絕對底部。")
 
-    # 計算底部八大指標
-    s_ahr     = calc_ahr999(curr_close, curr.get('AHR999', 1.0))
-    s_puell   = calc_puell_multiple(curr_close, curr.get('Puell_Multiple', 1.0))
-    s_mvrv    = calc_mvrv_zscore(curr_close, curr.get('MVRV_ZScore', 1.0))
-    s_picyc   = calc_pi_cycle_bottom(curr_close, curr.get('Pi_Cycle_Low', 1.0))
-    s_200wma  = calc_200wma_diff(curr_close, curr.get('SMA_200W', 1.0))
-    s_real    = calc_realized_price_diff(curr_close, curr.get('Realized_Price', 1.0))
-    s_nupl    = calc_net_unrealized_profit_loss(curr_close, curr.get('NUPL', 0.5))
-    s_cvdd    = calc_cvdd_diff(curr_close, curr.get('CVDD', 1.0))
-
-    bottom_score, indicators_status = calculate_bear_bottom_score(
-        s_ahr, s_puell, s_mvrv, s_picyc, s_200wma, s_real, s_nupl, s_cvdd
-    )
+    # ✅ 修正：直接使用傳入的 curr 字典計算，並解構字典回傳的 signals
+    bottom_score, signals = calculate_bear_bottom_score(curr)
 
     hunter_c1, hunter_c2 = st.columns([1, 2])
 
@@ -274,22 +259,30 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
         st.markdown(CARD_STYLE, unsafe_allow_html=True)
         st.markdown("##### 🔍 八大指標細項狀態")
         
-        # 使用 2x4 的 columns 排版
+        # ✅ 修正：改由迭代 signals 字典，支援新的欄位格式與更強的防呆
         col_idx = 0
         cols = st.columns(4)
         
-        for name, value, status, hit in indicators_status:
+        for name, data in signals.items():
             with cols[col_idx % 4]:
+                # 若得分大於 0 代表指標被觸發 (hit)
+                hit = data['score'] > 0
                 color = "#00e676" if hit else "#757575"
                 icon = "✅" if hit else "❌"
+                # 若值為 '—' (無資料)，標示顏色改為中性灰色
+                if data['value'] == '—':
+                    icon = "⏳"
+                    color = "#aaaaaa"
+                
                 st.markdown(f"""
                 <div style="text-align:center; padding:5px; margin-bottom:10px; border:1px solid {color}; border-radius:5px; background-color:rgba(0,0,0,0.2);">
                     <div style="font-size:0.8rem; color:#aaa;">{name}</div>
-                    <div style="font-size:1.1rem; font-weight:bold; color:{color};">{icon} {value:.2f}</div>
-                    <div style="font-size:0.7rem; color:#888;">{status}</div>
+                    <div style="font-size:1.1rem; font-weight:bold; color:{color};">{icon} {data['value']}</div>
+                    <div style="font-size:0.7rem; color:#888;">{data['label']}</div>
                 </div>
                 """, unsafe_allow_html=True)
             col_idx += 1
+            
         st.markdown(CARD_END, unsafe_allow_html=True)
 
     st.markdown("---")
