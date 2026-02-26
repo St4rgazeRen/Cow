@@ -4,14 +4,18 @@ Tab 4: 時光機回測
 
 v2.0 重構:
   - 所有策略參數（call_risk / put_risk / ahr_threshold）移至 Tab 內部設定
-  - bt_tab1 新增「參數面板」，可手動調整進場條件
-  - bt_tab1 新增「🔍 尋找最佳參數」一鍵最佳化按鈕
+  - bt_tab1 新增「參數面板」，可手動調整進場條件與防守線
+  - bt_tab1 新增「🔍 尋找最佳參數」一鍵最佳化按鈕，將防守線納入多維度掃描
   - bt_tab3 修正：同時繪製 MA200 + MA50，與驗證邏輯完全吻合
 
 [Task 4b - UX] CSV 下載功能:
   - 波段交易回測紀錄（trades_df）可下載為 .csv
   - 雙幣滾倉回測日誌（trade_log）可下載為 .csv
 """
+# 關閉 SSL 驗證警告，避免本地端公司網路環境報錯
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import io
 import itertools
 import streamlit as st
@@ -48,7 +52,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
     ])
 
     # ══════════════════════════════════════════════════════════════
-    # Sub-Tab 1: 波段策略 PnL（已移除最大乖離限制）
+    # Sub-Tab 1: 波段策略 PnL（支援動態防守線與最佳化）
     # ══════════════════════════════════════════════════════════════
     with bt_tab1:
         st.markdown("#### 📉 波段策略驗證 (自訂區間 PnL)")
@@ -73,13 +77,12 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
             )
 
             st.markdown("---")
-            st.markdown("**進場條件調整**")
+            st.markdown("**進場與防守條件調整**")
             dist_min = st.slider(
                 "EMA20 最小乖離 (%)",
                 min_value=0.0, max_value=2.0, value=0.0, step=0.1,
                 help="收盤價高於 EMA20 的最小百分比偏差（0 = 只要站上 EMA20 即符合）",
             )
-            # 已移除「最大乖離」滑桿
             rsi_thresh = st.slider(
                 "RSI 動能閾值",
                 min_value=40, max_value=65, value=50, step=1,
@@ -89,6 +92,14 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                 "ADX 趨勢強度閾值",
                 min_value=10, max_value=35, value=20, step=1,
                 help="ADX 需高於此值才視為有效趨勢（過濾橫盤假訊號）",
+            )
+            
+            # 新增：選擇出場防守線的 UI
+            exit_ma_key = st.selectbox(
+                "波段防守線 (出場條件)",
+                options=["SMA_50", "EMA_20", "SMA_200"],
+                index=0,
+                help="選擇做為出場防守的均線。當價格跌破此均線即觸發賣出。"
             )
 
             run_backtest = st.button("🚀 執行波段回測", type="primary")
@@ -109,12 +120,13 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                     st.error("結束日期必須晚於開始日期")
                 else:
                     with st.spinner("正在模擬交易..."):
-                        # 呼叫回測引擎 (已移除 entry_dist_max_pct)
+                        # 呼叫回測引擎，傳入使用者選擇的 exit_ma
                         trades, final_val, roi, num_trades, mdd, stats = run_swing_strategy_backtest(
                             btc, start_d, end_d, init_cap,
                             entry_dist_min_pct=dist_min,
                             rsi_min=rsi_thresh,
                             adx_min=adx_thresh,
+                            exit_ma=exit_ma_key,
                         )
                         m1, m2, m3, m4, m5 = st.columns(5)
                         m1.metric("最終資產", f"${final_val:,.0f}")
@@ -140,11 +152,11 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             x=sub_df.index, y=sub_df['close'],
                             mode='lines', name='Price', line=dict(color='gray', width=1),
                         ))
-                        # 改畫 SMA50，因為現在出場看這條
-                        if 'SMA_50' in sub_df.columns:
+                        # 根據 UI 選擇動態畫出防守線
+                        if exit_ma_key in sub_df.columns:
                             fig.add_trace(go.Scatter(
-                                x=sub_df.index, y=sub_df['SMA_50'],
-                                mode='lines', name='SMA 50 (防守線)', line=dict(color='yellow', width=1, dash='dash'),
+                                x=sub_df.index, y=sub_df[exit_ma_key],
+                                mode='lines', name=f'{exit_ma_key} (防守線)', line=dict(color='yellow', width=1, dash='dash'),
                             ))
                         if not trades.empty:
                             buys  = trades[trades['Type'] == 'Buy']
@@ -171,7 +183,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             )
 
             # ──────────────────────────────────────────────────────
-            # 最佳化功能 (移除最大乖離維度，大幅加速)
+            # 最佳化功能 (將防守線也納入網格搜尋的維度)
             # ──────────────────────────────────────────────────────
             if run_optimize:
                 if start_d >= end_d:
@@ -179,12 +191,13 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                 else:
                     st.info("🔬 開始網格搜尋，掃描參數組合中...")
 
-                    # 搜尋網格 (減少維度)
+                    # 搜尋網格 (新增防守線維度)
                     dist_min_range  = [0.0, 0.2, 0.5]
                     rsi_range       = [45, 50, 55]
                     adx_range       = [15, 20, 25]
+                    exit_ma_range   = ["SMA_50", "EMA_20", "SMA_200"]
 
-                    grid = list(itertools.product(dist_min_range, rsi_range, adx_range))
+                    grid = list(itertools.product(dist_min_range, rsi_range, adx_range, exit_ma_range))
 
                     best_params = None
                     best_metric_val = -float('inf')
@@ -193,18 +206,20 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                     progress_bar = st.progress(0)
                     total = len(grid)
 
-                    for i, (dmin, rsi, adx) in enumerate(grid):
+                    for i, (dmin, rsi, adx, ema_exit) in enumerate(grid):
                         _, fval, roi_v, ntrades, _, sts = run_swing_strategy_backtest(
                             btc, start_d, end_d, init_cap,
                             entry_dist_min_pct=dmin,
                             rsi_min=rsi,
                             adx_min=adx,
+                            exit_ma=ema_exit, # 傳入動態防守線
                         )
                         target_val = sts.get('win_rate', 0) if "勝率" in opt_metric else roi_v
                         results.append({
                             "EMA乖離Min(%)": dmin,
                             "RSI閾值": rsi,
                             "ADX閾值": adx,
+                            "防守線": ema_exit,
                             "勝率(%)": round(sts.get('win_rate', 0), 1),
                             "總報酬ROI(%)": round(roi_v, 2),
                             "Sharpe": round(sts.get('sharpe', 0), 2),
@@ -216,6 +231,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                                 "EMA乖離Min(%)": dmin,
                                 "RSI閾值": rsi,
                                 "ADX閾值": adx,
+                                "防守線": ema_exit,
                                 "勝率(%)": round(sts.get('win_rate', 0), 1),
                                 "總報酬ROI(%)": round(roi_v, 2),
                                 "Sharpe": round(sts.get('sharpe', 0), 2),
@@ -229,8 +245,8 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                         st.success(f"✅ 找到最佳參數！（最佳化目標：{opt_metric}）")
                         bp_cols = st.columns(4)
                         bp_cols[0].metric("EMA乖離Min", f"{best_params['EMA乖離Min(%)']}%")
-                        bp_cols[1].metric("RSI 閾值",    f"{best_params['RSI閾值']}")
-                        bp_cols[2].metric("ADX 閾值",    f"{best_params['ADX閾值']}")
+                        bp_cols[1].metric("RSI / ADX",    f"{best_params['RSI閾值']} / {best_params['ADX閾值']}")
+                        bp_cols[2].metric("最佳防守線",    f"{best_params['防守線']}")
                         bp_cols[3].metric("勝率 / ROI",  f"{best_params['勝率(%)']}% / {best_params['總報酬ROI(%)']:+.1f}%")
                     else:
                         st.warning("⚠️ 在所有參數組合中，交易次數均不足 3 次，無法評估。請調整日期範圍。")

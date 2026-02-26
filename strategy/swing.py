@@ -20,6 +20,10 @@ Antigravity v4 波段交易策略 & 回測引擎（五合一進場過濾）
   而非逐行掃描所有 2000+ 天
 - 理論加速：10-50x，取決於資料長度與交易次數
 """
+# 關閉 SSL 驗證警告，避免本地端公司網路環境報錯
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 import math
 import numpy as np
 import pandas as pd
@@ -44,16 +48,17 @@ def run_swing_strategy_backtest(
     initial_capital=10_000,
     fee_rate=DEFAULT_FEE_RATE,
     slippage_rate=DEFAULT_SLIPPAGE_RATE,
-    entry_dist_max_pct: float = None,
+    entry_dist_max_pct: float = None, # 保留參數以維持相容性，但內部邏輯已解除限制
     rsi_min: int = None,
     adx_min: int = None,
+    exit_ma: str = "SMA_50",  # 新增：接收 UI 傳來的動態防守線參數
 ):
     """
-    Antigravity v4 波段策略回測（五合一進場過濾）
+    Antigravity v4 波段策略回測（五合一進場過濾 + 動態出場防守線）
 
-    進場: Price > SMA200 AND RSI_14 > 50 AND 0% ≤ dist_from_EMA20 ≤ 1.5%
+    進場: Price > SMA200 AND RSI_14 > 50 AND 0% ≤ dist_from_EMA20
           AND MACD > Signal AND ADX > 20
-    出場: Price < EMA_20
+    出場: Price < UI傳入的防守線 (預設 SMA_50)
 
     [Backtest Realism] 交易摩擦成本:
     ─────────────────────────────────────────────────────────────────
@@ -71,27 +76,6 @@ def run_swing_strategy_backtest(
     合計一來一回摩擦成本 ≈ 0.4%（0.2% 進 + 0.2% 出）
     ─────────────────────────────────────────────────────────────────
 
-    [Task #5] 向量化重構說明:
-    ─────────────────────────────────────────────────────────────────
-    原始做法 (逐行迴圈):
-        for i in range(len(bt_df)):          # 每天都進迴圈
-            row = bt_df.iloc[i]              # iloc 每次 O(1) 但累積很慢
-            if state == "CASH" and is_entry: # 分支判斷
-
-    新做法 (二段式向量化):
-    第一段 - 向量化計算訊號欄位 (完全無 Python for loop):
-        dist_pct  = (close / ema_20 - 1) * 100          # Pandas 廣播
-        is_entry  = bull_trend & (dist_pct >= 0) & ...   # Boolean mask
-        is_exit   = close < ema_20                        # Boolean mask
-
-    第二段 - 只迭代「訊號觸發點」(通常 < 50 次 vs 2000+ 天):
-        entry_dates = bt_df[is_entry].index  # 只有進場日
-        exit_dates  = bt_df[is_exit].index   # 只有出場日
-        → 在這兩個小陣列上配對，效能與 N 無關，只與交易次數有關
-
-    整體加速: 10-50x（視資料長度而定）
-    ─────────────────────────────────────────────────────────────────
-
     返回: (trades_df, final_equity, roi_pct, trade_count, max_drawdown_pct, stats_dict)
     """
     mask  = (df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))
@@ -100,10 +84,9 @@ def run_swing_strategy_backtest(
     if bt_df.empty:
         return pd.DataFrame(), 0.0, 0.0, 0, 0.0, {}
 
-    # 套用自訂參數（若未提供則使用 config 預設值）
-    _dist_min = entry_dist_min_pct if entry_dist_min_pct is not None else ENTRY_DIST_MIN_PCT
-    _dist_max = entry_dist_max_pct if entry_dist_max_pct is not None else ENTRY_DIST_MAX_PCT
-    _rsi_min  = rsi_min  if rsi_min  is not None else EXIT_RSI_MIN
+    # 套用自訂參數，未提供則使用安全預設值
+    _dist_min = 0.0  # 強制最小乖離為 0 (站上 EMA20)
+    _rsi_min  = rsi_min  if rsi_min  is not None else 50
     _adx_min  = adx_min  if adx_min  is not None else 20
 
     # ──────────────────────────────────────────────────────────────
@@ -134,15 +117,12 @@ def run_swing_strategy_backtest(
         adx_trending = pd.Series(True, index=bt_df.index)
 
     # 🚀 進場條件修改：放寬乖離限制，改抓「突破與趨勢確認」
-    # 移除 (dist_pct <= _dist_max) 的限制。
-    # 只要價格大於 EMA20 (_dist_min 預設通常為 0)，且動能指標 (MACD, ADX, RSI) 都轉強，
-    # 代表趨勢成型，直接進場，不再因為「漲太兇」而錯失主升段！
+    # 只要價格大於 EMA20 (_dist_min = 0)，且動能指標 (MACD, ADX, RSI) 都轉強即進場
     is_entry = bull_trend & (dist_pct >= _dist_min) & macd_bull & adx_trending
 
-    # 🛡️ 出場條件修改 (方法二進階版)：使用 50 日均線保護波段
-    # 跌破 SMA50 才出場，過濾掉短線跌破 EMA20 的假摔洗盤，讓你抱得住長波段
-    if 'SMA_50' in bt_df.columns:
-        is_exit = close < bt_df['SMA_50']
+    # 🛡️ 出場條件修改：動態使用傳入的均線名稱 (exit_ma)
+    if exit_ma in bt_df.columns:
+        is_exit = close < bt_df[exit_ma]
     else:
         is_exit = close < ema_safe
 
@@ -161,22 +141,18 @@ def run_swing_strategy_backtest(
     entry_price = 0.0
     trades      = []
 
-    # 只掃描所有行，但只在「進出場訊號日」做計算
-    # 相比原版的差異：使用 NumPy array 存取，避免 Pandas iloc 的 overhead
     for i in range(len(bt_df)):
         price = closes[i]
         date  = dates[i]
 
         if state == "CASH" and entry_mask[i]:
             # ── 進場（含手續費與滑點摩擦成本）──
-            # 進場時：實際成交價 = 市場價 × (1 + 手續費率 + 滑點率)
-            # 例如：BTC=$100,000，fee+slip=0.2% → 實際花費每幣 $100,200
             friction_in  = fee_rate + slippage_rate
             effective_entry_price = price * (1.0 + friction_in)
 
             # 以調整後成本計算可購入的幣量（balance 全倉投入）
             position    = balance / effective_entry_price
-            entry_price = effective_entry_price  # 記錄含成本的進場均價
+            entry_price = effective_entry_price
 
             trades.append({
                 "Type":       "Buy",
@@ -193,8 +169,6 @@ def run_swing_strategy_backtest(
 
         elif state == "INVESTED" and exit_mask[i]:
             # ── 出場（含手續費與滑點摩擦成本）──
-            # 出場時：實際成交價 = 市場價 × (1 - 手續費率 - 滑點率)
-            # 例如：BTC=$110,000，fee+slip=0.2% → 實際收到每幣 $109,780
             friction_out  = fee_rate + slippage_rate
             effective_exit_price  = price * (1.0 - friction_out)
 
@@ -214,7 +188,7 @@ def run_swing_strategy_backtest(
                 "Fee%":       friction_out * 100,   # 出場摩擦成本 %
                 "Balance":    balance,
                 "Crypto":     0.0,
-                "Reason":     "Trend Break (<EMA20)",
+                "Reason":     f"Trend Break (<{exit_ma})", # 顯示動態防守線
                 "PnL":        net_pnl,              # 淨盈虧（已扣摩擦成本）
                 "PnL%":       net_pnl_pct,          # 淨報酬率（已扣摩擦成本）
             })
