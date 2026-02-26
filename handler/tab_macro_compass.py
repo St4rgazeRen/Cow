@@ -35,7 +35,22 @@ CARD_STYLE = """
 """
 CARD_END = "</div>"
 
-def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: str, proxies: dict):
+def render(
+    btc: pd.DataFrame, 
+    chart_df: pd.DataFrame, 
+    tvl_hist: pd.DataFrame, 
+    stable_hist: pd.DataFrame, 
+    fund_hist: pd.DataFrame,
+    curr: pd.Series, 
+    dxy: pd.DataFrame, 
+    funding_rate: float, 
+    tvl_val: float,
+    fng_val: float, 
+    fng_state: str, 
+    fng_source: str, 
+    proxies: dict, 
+    realtime_data: dict
+):
     """
     Macro Cycle Compass 渲染入口
     """
@@ -78,9 +93,8 @@ def render(btc: pd.DataFrame, curr: pd.Series, risk_score: float, risk_level: st
     if nupl < 0: onchain_score += 30
     elif nupl > 0.7: onchain_score -= 30
 
-    fund_rate = proxies.get('funding_rate', 0)
-    if fund_rate < 0: onchain_score += 30
-    elif fund_rate > 0.05: onchain_score -= 30
+    if funding_rate < 0: onchain_score += 30
+    elif funding_rate > 0.05: onchain_score -= 30
 
     # 總體多空分數
     total_bull_bear_score = (tech_score * 0.5) + (macro_score * 0.2) + (onchain_score * 0.3)
