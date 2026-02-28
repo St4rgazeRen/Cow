@@ -13,6 +13,7 @@ from datetime import datetime
 
 # ==============================================================================
 # 環境設定與安全限制覆寫 (強制關閉全域 SSL 驗證)
+# 因為公司網路或特定環境可能會有 SSL 憑證問題，統一關閉驗證
 # ==============================================================================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 os.environ['CURL_CA_BUNDLE'] = ''
@@ -54,20 +55,19 @@ def get_decision_data():
     
     current_price = None
     try:
-        # 直接透過 Binance 公開 API 獲取最新的 BTC/USDT 即時價格
-        # 使用 verify=False 關閉 SSL 驗證，避免在公司內網或特殊網路環境下報錯
-        # 設定 timeout=10 避免 GitHub Actions 卡死
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+        # [修改區塊]：改用 Coinbase 公開 API 獲取最新的 BTC/USD 即時價格
+        # 原因是 GitHub Actions 伺服器多在美國，使用 Binance API 會遭遇 451 Geo-block 錯誤
+        # Coinbase 對美國 IP 完全開放，且不需 API Key 即可抓取現貨價格
+        url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
         response = requests.get(url, verify=False, timeout=10)
-        response.raise_for_status()  # 若發送請求失敗 (例如 404, 500 等)，會在此拋出例外
+        response.raise_for_status() 
         
-        # 將回傳的 JSON 資料解析，並提取 'price' 欄位轉為浮點數
-        current_price = float(response.json()['price'])
-        print(f"✅ 成功透過 Binance API 抓取最新 BTC 價格: {current_price}")
+        # 解析 Coinbase 的 JSON 結構 (其價格放在 data 底下的 amount 欄位)
+        current_price = float(response.json()['data']['amount'])
+        print(f"✅ 成功透過 Coinbase API 抓取最新 BTC 價格: {current_price}")
         
     except Exception as e:
-        # 捕捉並印出錯誤，方便在 GitHub Actions 的 Log 中追蹤問題
-        print(f"❌ 抓取 Binance 即時價格失敗，錯誤原因: {e}")
+        print(f"❌ 抓取 Coinbase 即時價格失敗，錯誤原因: {e}")
 
     try:
         btc_df, _ = fetch_market_data()
@@ -88,7 +88,7 @@ def get_decision_data():
             
             curr = btc_df.iloc[-1].copy()
             
-            # 若上方 Binance API 抓取失敗，則使用歷史 K 棒的最後一筆收盤價作為備用 (Fallback)
+            # 若上方 Coinbase API 抓取失敗，則使用歷史 K 棒的最後一筆收盤價作為備用
             if current_price is None:
                 current_price = float(curr['close'])
             
