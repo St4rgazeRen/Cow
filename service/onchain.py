@@ -1,11 +1,11 @@
 """
 service/onchain.py
 鏈上數據服務 — TVL、穩定幣市值、資金費率歷史
-透過 data_manager 本地緩存 + Binance API 補救 (新增 Bybit 備援機制)
+透過 data_manager 本地緩存 + Binance API 補救 (新增 Bybit / OKX 極速備援)
 
 [Task #1] SSL 繞過：所有外部 requests.get() 加入 verify=False
 [Task #2] 非同步抓取：_fetch_funding_rate_history 改用 httpx.AsyncClient 並行發送請求
-[Task #3] Geo-block 備援：新增 Bybit API 作為 Binance 遭遇 451 時的備用方案
+[Task #3] Geo-block 備援：Binance 遭遇 451 時，直接抓取 Bybit/OKX 最新數據，避開舊時間戳限制
 """
 import time
 import asyncio          
@@ -31,7 +31,7 @@ def fetch_aux_history():
     獲取輔助歷史數據:
     - BTC 鏈上 TVL (DeFiLlama)
     - 全球穩定幣市值 (DeFiLlama)
-    - BTC 資金費率歷史 (Binance / Bybit，迴圈分頁 2021-Now)
+    - BTC 資金費率歷史 (Binance / Bybit / OKX)
     返回: (tvl_df, stable_df, funding_df)
     """
     tvl = pd.DataFrame()
@@ -82,7 +82,7 @@ def _fetch_stablecoin_history():
     return pd.DataFrame()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# [Task #2] 非同步資金費率抓取 (加入 Bybit 備援)
+# [Task #2] 非同步資金費率抓取 (加入 Bybit / OKX 備援)
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _fetch_binance_funding_page_async(client: httpx.AsyncClient, start_ts: int) -> list:
@@ -96,23 +96,7 @@ async def _fetch_binance_funding_page_async(client: httpx.AsyncClient, start_ts:
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
-        print(f"[Binance] Async funding page error (start={start_ts}): {e}")
-    return []
-
-async def _fetch_bybit_funding_page_async(client: httpx.AsyncClient, start_ts: int, end_ts: int) -> list:
-    """抓取 Bybit 單頁資金費率 (備援用)"""
-    try:
-        resp = await client.get(
-            "https://api.bybit.com/v5/market/funding/history",
-            params={'category': 'linear', 'symbol': 'BTCUSDT', 'limit': 200, 'startTime': start_ts, 'endTime': end_ts},
-            timeout=10.0
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("retCode") == 0:
-                return data.get("result", {}).get("list", [])
-    except Exception as e:
-        print(f"[Bybit] Async funding page error (start={start_ts}): {e}")
+        pass # 失敗交由外層 fallback 處理
     return []
 
 async def _fetch_binance_funding_rate_async() -> pd.DataFrame:
@@ -157,60 +141,79 @@ async def _fetch_binance_funding_rate_async() -> pd.DataFrame:
     print(f"[Market] 成功使用 Binance 抓取資金費率歷史: {len(df)} 筆")
     return df
 
-async def _fetch_bybit_funding_rate_async() -> pd.DataFrame:
-    """非同步抓取 Bybit 全部資金費率 (Binance 遭遇 451 時的替代方案)"""
-    start_ts = int(datetime(2021, 1, 1).timestamp() * 1000)
-    end_ts   = int(datetime.now().timestamp() * 1000)
-    interval_ms = 200 * 8 * 3600 * 1000  # Bybit 每頁最大 200 筆限制
-
-    page_starts = []
-    ts = start_ts
-    while ts < end_ts:
-        page_starts.append(ts)
-        ts += interval_ms
-
-    all_rates = []
-    async with httpx.AsyncClient(verify=SSL_VERIFY) as client:
-        tasks = []
-        for s in page_starts:
-            e = s + interval_ms - 1
-            tasks.append(_fetch_bybit_funding_page_async(client, s, e))
-        
-        pages = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for page in pages:
-            if isinstance(page, list):
-                all_rates.extend(page)
-
-    if not all_rates:
-        return pd.DataFrame()
-
+async def _fetch_fallback_funding_rate_async() -> pd.DataFrame:
+    """
+    極速備援機制：當 Binance 遭遇 451 封鎖時觸發。
+    放棄抓取 2021 歷史（避免舊時間戳報錯），改為只抓取最新數據（完全滿足推播需求）。
+    """
     recs = []
-    for item in all_rates:
+    source = ""
+    
+    async with httpx.AsyncClient(verify=SSL_VERIFY) as client:
+        # 第一備援：Bybit (抓取最新 200 筆，約 66 天，不押時間範圍)
         try:
-            dt   = pd.to_datetime(int(item['fundingRateTimestamp']), unit='ms', utc=True)
-            rate = float(item['fundingRate']) * 100  
-            recs.append({'date': dt, 'fundingRate': rate})
-        except Exception:
-            continue
+            resp = await client.get(
+                "https://api.bybit.com/v5/market/funding/history",
+                params={'category': 'linear', 'symbol': 'BTCUSDT', 'limit': 200},
+                timeout=10.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("retCode") == 0:
+                    bybit_list = data.get("result", {}).get("list", [])
+                    for item in bybit_list:
+                        try:
+                            dt = pd.to_datetime(int(item['fundingRateTimestamp']), unit='ms', utc=True)
+                            rate = float(item['fundingRate']) * 100  
+                            recs.append({'date': dt, 'fundingRate': rate})
+                        except Exception:
+                            continue
+                    source = "Bybit"
+        except Exception as e:
+            print(f"[Bybit] 備援請求失敗: {e}")
+
+        # 第二備援：如果 Bybit 失敗，嘗試 OKX (抓取最新 100 筆)
+        if not recs:
+            print("[Market] Bybit 失敗，切換 OKX 資金費率備援機制...")
+            try:
+                resp = await client.get(
+                    "https://www.okx.com/api/v5/public/funding-rate-history",
+                    params={'instId': 'BTC-USDT-SWAP', 'limit': 100},
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("code") == "0":
+                        okx_list = data.get("data", [])
+                        for item in okx_list:
+                            try:
+                                dt = pd.to_datetime(int(item['fundingTime']), unit='ms', utc=True)
+                                rate = float(item['fundingRate']) * 100  
+                                recs.append({'date': dt, 'fundingRate': rate})
+                            except Exception:
+                                continue
+                        source = "OKX"
+            except Exception as e:
+                print(f"[OKX] 備援請求失敗: {e}")
 
     if not recs:
+        print("[Market] ❌ 所有資金費率來源 (Binance/Bybit/OKX) 均抓取失敗")
         return pd.DataFrame()
 
     df = pd.DataFrame(recs).set_index('date')
     df = df[~df.index.duplicated(keep='first')]
     df.sort_index(inplace=True)
-    print(f"[Market] 成功使用 Bybit 抓取資金費率歷史: {len(df)} 筆")
+    print(f"[Market] 成功使用 {source} 抓取最新資金費率: {len(df)} 筆")
     return df
 
 async def _fetch_funding_rate_async() -> pd.DataFrame:
-    """資金費率主邏輯：優先 Binance，失敗則 fallback 到 Bybit"""
+    """資金費率主邏輯：優先 Binance，失敗則 fallback 到極速備援"""
     df = await _fetch_binance_funding_rate_async()
     if not df.empty:
         return df
     
-    print("[Market] Binance 資金費率抓取失敗 (可能遇到 451 地理封鎖)，啟動 Bybit 備援機制...")
-    return await _fetch_bybit_funding_rate_async()
+    print("[Market] Binance 資金費率抓取失敗 (可能遇到 451 封鎖)，啟動備援機制...")
+    return await _fetch_fallback_funding_rate_async()
 
 def _fetch_funding_rate_history() -> pd.DataFrame:
     """
