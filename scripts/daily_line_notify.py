@@ -54,10 +54,20 @@ def get_decision_data():
     
     current_price = None
     try:
-        realtime_data = fetch_realtime_data()
-        if realtime_data and realtime_data.get('price'):
-            current_price = float(realtime_data['price'])
-    except: pass
+        # 直接透過 Binance 公開 API 獲取最新的 BTC/USDT 即時價格
+        # 使用 verify=False 關閉 SSL 驗證，避免在公司內網或特殊網路環境下報錯
+        # 設定 timeout=10 避免 GitHub Actions 卡死
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+        response = requests.get(url, verify=False, timeout=10)
+        response.raise_for_status()  # 若發送請求失敗 (例如 404, 500 等)，會在此拋出例外
+        
+        # 將回傳的 JSON 資料解析，並提取 'price' 欄位轉為浮點數
+        current_price = float(response.json()['price'])
+        print(f"✅ 成功透過 Binance API 抓取最新 BTC 價格: {current_price}")
+        
+    except Exception as e:
+        # 捕捉並印出錯誤，方便在 GitHub Actions 的 Log 中追蹤問題
+        print(f"❌ 抓取 Binance 即時價格失敗，錯誤原因: {e}")
 
     try:
         btc_df, _ = fetch_market_data()
@@ -77,6 +87,8 @@ def get_decision_data():
             btc_df = calculate_bear_bottom_indicators(btc_df)
             
             curr = btc_df.iloc[-1].copy()
+            
+            # 若上方 Binance API 抓取失敗，則使用歷史 K 棒的最後一筆收盤價作為備用 (Fallback)
             if current_price is None:
                 current_price = float(curr['close'])
             
