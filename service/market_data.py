@@ -6,7 +6,7 @@ service/market_data.py
   0th: 本地 SQLite DB（db/btcusdt_15m_*.db，由 collector 預先收集）— 最優先、最可靠
   1st: Yahoo Finance (yfinance)
   2nd: Binance REST API（直接 HTTP，不依賴 ccxt）— 部分 Streamlit Cloud IP 被 451 封鎖
-  3rd: Kraken 公開 API — 無地理限制，適合 Streamlit Cloud
+  3rd: Kraken 公開 API — 無地理限制，適合 Streamlit Cloud/GitHub Actions
   4th: CryptoCompare 公開 API — 有 2010 年起完整 BTC 日線歷史，分頁抓取
 """
 import os
@@ -55,10 +55,7 @@ def fetch_binance_daily(start_date_str):
     API: GET https://api.binance.com/api/v3/klines
     - 無需 API Key（公開端點）
     - limit 最大 1000，分頁以 startTime 推進
-    - 注意：Binance 對部分 Streamlit Cloud IP 返回 451（地理封鎖），此時自動跳至第三備援
-
-    回應格式（每筆）:
-      [open_time_ms, open, high, low, close, volume, close_time_ms, ...]
+    - 注意：Binance 對部分 Streamlit Cloud 或 GitHub Actions IP 返回 451（地理封鎖）
     """
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
     now_ts   = int(datetime.now().timestamp() * 1000)
@@ -123,10 +120,7 @@ def fetch_binance_daily(start_date_str):
 def fetch_kraken_daily(start_date_str):
     """
     第三備援：從 Kraken 公開 API 抓取 BTC/USD 日線數據。
-    Kraken 無地理封鎖限制，適合從 Streamlit Cloud 呼叫。
-    - 每頁最多 720 筆，從 start_date 分頁取到最新
-    - 免費、無需 API Key
-    - 回傳真實 OHLCV，與 yfinance/Binance 格式一致
+    Kraken 無地理封鎖限制，適合從 Streamlit Cloud / GitHub Actions 呼叫。
     """
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
     url = "https://api.kraken.com/0/public/OHLC"
@@ -186,12 +180,7 @@ def fetch_cryptocompare_daily(start_date_str):
     """
     第四備援：從 CryptoCompare 公開 API 抓取 BTC/USD 日線歷史。
     - 無需 API Key，免費端點
-    - 有自 2010 年起的完整比特幣日線數據，可覆蓋 2015 年以前的歷史
-    - 每次最多 2000 筆，分頁倒序抓取（toTs 往前推）
-
-    分頁策略:
-      CryptoCompare histoday 以「結束時間戳」為錨點向前抓取 limit 筆
-      → 先抓到現在，再往前推直到 start_date_str 前的時間
+    - 分頁倒序抓取（toTs 往前推）
     """
     url = "https://min-api.cryptocompare.com/data/v2/histoday"
     start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
@@ -295,16 +284,11 @@ def fetch_market_data():
     if last_date and last_date < today:
         start_fetch_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
     elif not last_date:
-        # 目標：抓取 2015-01-01 起的完整歷史
-        # Yahoo Finance BTC 最早 ~2014-09，Binance 從 2017-08，Kraken 有限
-        # CryptoCompare 第四備援可覆蓋 2015 前資料
         start_fetch_date = "2015-01-01"
 
-    # 若有需要更新的日期，開始抓取（四層備援，所有備援訊息改用 print 避免汙染 UI）
-    _fetch_log = []  # 收集備援過程記錄，最後由 app.py 統一決定是否顯示
-
+    # 若有需要更新的日期，開始抓取
     if start_fetch_date:
-        # --- 第零層：本地 SQLite DB（collector 預先收集的 15m 資料重採樣為日線）---
+        # --- 第零層：本地 SQLite DB ---
         if has_local_data():
             try:
                 btc_new = read_btc_daily(start_date=start_fetch_date)
@@ -319,7 +303,6 @@ def fetch_market_data():
             try:
                 btc_new = yf.download("BTC-USD", start=start_fetch_date, interval="1d", progress=False, session=session)
                 if not btc_new.empty:
-                    # 處理 yfinance 可能回傳 MultiIndex columns 的問題
                     btc_new.columns = [
                         c[0].lower() if isinstance(c, tuple) else c.lower()
                         for c in btc_new.columns
@@ -328,7 +311,7 @@ def fetch_market_data():
             except Exception as e:
                 print(f"[Market] Yahoo Finance 失敗 ({type(e).__name__})，切換 Binance REST")
 
-        # --- 第二層：Binance REST API（直接 HTTP，不使用 ccxt）---
+        # --- 第二層：Binance REST API ---
         if btc_new.empty:
             try:
                 btc_new = fetch_binance_daily(start_fetch_date)
@@ -339,7 +322,7 @@ def fetch_market_data():
                 tag = "451地理封鎖" if "451" in err_msg else type(e).__name__
                 print(f"[Market] Binance REST 失敗 ({tag})，切換 Kraken")
 
-        # --- 第三層：Kraken（無地理封鎖，Streamlit Cloud 可用）---
+        # --- 第三層：Kraken ---
         if btc_new.empty:
             try:
                 btc_new = fetch_kraken_daily(start_fetch_date)
@@ -348,7 +331,7 @@ def fetch_market_data():
             except Exception as e:
                 print(f"[Market] Kraken 失敗 ({type(e).__name__})，切換 CryptoCompare")
 
-        # --- 第四層：CryptoCompare（有 2010 年起完整 BTC 歷史，最強歷史覆蓋）---
+        # --- 第四層：CryptoCompare ---
         if btc_new.empty:
             try:
                 btc_new = fetch_cryptocompare_daily(start_fetch_date)
@@ -362,22 +345,27 @@ def fetch_market_data():
         full_df = pd.concat([local_df, btc_new]) if not local_df.empty else btc_new
         full_df = full_df[~full_df.index.duplicated(keep='last')]
         full_df.sort_index(inplace=True)
-        # 本地端存檔，避免下次啟動重複下載
         full_df.to_csv(BTC_CSV)
         btc_final = full_df
     else:
         btc_final = local_df
 
     # ── T 日數據縫合 (Data Stitching) ───────────────────────────────────────────
-    # 確保本地 SQLite 歷史資料與今日即時 T 日數據無縫 Concat，避免 MA/均線計算斷層。
-    # 若歷史最後一筆早於今日，則嘗試從 Yahoo / Binance 補充當日 K 棒。
+    # 【重大修正】：確保本地庫若落後多天，能從正確的「缺口日期」開始補齊，且移除會觸發 451 的幣安備援
     if not btc_final.empty and btc_final.index[-1].date() < today:
-        today_str = today.strftime('%Y-%m-%d')
+        # 計算從哪一天開始補資料 (從歷史最後一筆的隔天開始)
+        gap_start_date = (btc_final.index[-1].date() + timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # 避免極端情況：如果 gap_start_date 不合理地大於今天，將其修正為今天
+        if gap_start_date > today.strftime('%Y-%m-%d'):
+            gap_start_date = today.strftime('%Y-%m-%d')
+
         _tday_df  = pd.DataFrame()
+        
         # 優先 Yahoo Finance（延遲最小）
         try:
             _tday_df = yf.download(
-                "BTC-USD", start=today_str, interval="1d",
+                "BTC-USD", start=gap_start_date, interval="1d",
                 progress=False, session=session,
             )
             if not _tday_df.empty:
@@ -387,13 +375,26 @@ def fetch_market_data():
                 ]
         except Exception:
             _tday_df = pd.DataFrame()
-        # 備援：Binance REST
+            
+        # 備援 1：Kraken (取代原本的 Binance，不會被 GitHub Actions IP 擋)
         if _tday_df.empty:
             try:
-                _tday_df = fetch_binance_daily(today_str)
+                _tday_df = fetch_kraken_daily(gap_start_date)
+                if not _tday_df.empty:
+                    print("[Market] 縫合區塊：成功使用 Kraken 補齊缺漏資料")
             except Exception:
                 _tday_df = pd.DataFrame()
-        # 縫合：把 T 日數據 Concat 到歷史末端
+                
+        # 備援 2：CryptoCompare
+        if _tday_df.empty:
+            try:
+                _tday_df = fetch_cryptocompare_daily(gap_start_date)
+                if not _tday_df.empty:
+                    print("[Market] 縫合區塊：成功使用 CryptoCompare 補齊缺漏資料")
+            except Exception:
+                _tday_df = pd.DataFrame()
+
+        # 縫合：把補齊的數據 Concat 到歷史末端
         if not _tday_df.empty:
             if _tday_df.index.tz is not None:
                 _tday_df.index = _tday_df.index.tz_localize(None)
