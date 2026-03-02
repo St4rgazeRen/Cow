@@ -140,6 +140,7 @@ def _binance_klines(start_ms: int, end_ms: int) -> list:
                         "limit":     1000,
                     },
                     timeout=30,
+                    verify=False  # 關閉 SSL 驗證，避免公司網路環境攔截導致抓取失敗
                 )
                 if resp.status_code == 451:
                     raise RuntimeError("Binance 451 地理封鎖，請改用 VPN 或切換 Kraken 模式")
@@ -198,6 +199,7 @@ def _kraken_klines(start_ms: int, end_ms: int) -> list:
                     url,
                     params={"pair": "XBTUSD", "interval": 15, "since": since_s},
                     timeout=30,
+                    verify=False  # 關閉 SSL 驗證，避免公司網路環境攔截導致抓取失敗
                 )
                 resp.raise_for_status()
                 data = resp.json()
