@@ -16,6 +16,7 @@ v2.0 重構:
 """
 import streamlit as st
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
 # Handler 層
 from handler.layout import setup_page, render_sidebar
@@ -43,6 +44,8 @@ from core.bear_bottom import calculate_bear_bottom_indicators
 # 1. 頁面初始化
 # ==============================================================================
 setup_page()
+# 每 60 秒自動重整頁面，確保 BTC 即時價格與 realtime_data 持續更新
+st_autorefresh(interval=60_000, limit=None, key="btc_price_autorefresh")
 sidebar_params = render_sidebar()
 
 # v2.0: 只從 sidebar 取日期區間（其餘參數已移至各 Tab）
@@ -216,7 +219,7 @@ st.markdown("---")
 # 5. Tabs
 # ==============================================================================
 tab1, tab2, tab3, tab4 = st.tabs([
-    "🧭 長週期週期羅盤 (Macro Compass)",
+    "🧭 長週期羅盤 (Macro Compass)",
     "🌊 波段狙擊 (Swing Trading)",
     "💰 雙幣理財 (Dual Investment)",
     "⏳ 時光機回測 (Backtest)",

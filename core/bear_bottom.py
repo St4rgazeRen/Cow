@@ -266,111 +266,139 @@ def calculate_bear_bottom_score(row):
 # 市場多空評分 (-100 到 +100)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def calculate_market_cycle_score(row) -> int:
+def calculate_market_cycle_score_breakdown(row) -> tuple:
     """
-    市場多空複合評分 (-100 到 +100)
+    市場多空複合評分 + 各指標明細分解
 
-    架構：
-      - 空方評分 (bear)：0-100，熊底信號越多分數越高
-      - 多方評分 (bull)：0-100，牛頂超熱信號越多分數越高
-      - 最終分數 = bull - bear，clip 至 [-100, +100]
+    返回: (score, bear_total, bull_total, indicator_rows)
+      score         : int，-100 到 +100
+      bear_total    : int，熊底分數合計（0-100）
+      bull_total    : int，牛頂分數合計（0-100）
+      indicator_rows: list[dict]，每個指標的 {name, value, bear, bear_max, bull, bull_max}
 
-    刻度語意：
-      -100 = 極度深熊 / 歷史大底（全部底部指標共振）
-        0  = 市場中性過渡區
-      +100 = 狂熱牛頂（全部頂部指標共振）
+    公式：score = bull_total - bear_total，clip 至 [-100, +100]
+    分數若長時間不變屬正常現象，代表鏈上週期位置確實穩定維持在當前區間。
     """
     def _safe(v):
         return v if (v is not None and not (isinstance(v, float) and math.isnan(v))) else 0.0
 
-    # ── 空方評分（底部指標）─────────────────────────────────────────────────
+    rows = []
     bear = 0
-
-    ahr = _safe(row.get('AHR999'))
-    if ahr > 0:
-        if ahr < 0.45:   bear += 20
-        elif ahr < 0.8:  bear += 13
-        elif ahr < 1.2:  bear += 5
-
-    mvrv = _safe(row.get('MVRV_Z_Proxy'))
-    if mvrv < -1.0:   bear += 18
-    elif mvrv < 0:    bear += 12
-    elif mvrv < 2.0:  bear += 4
-
-    pi_gap = _safe(row.get('PiCycle_Gap'))
-    if pi_gap < -10:  bear += 15
-    elif pi_gap < -3: bear += 10
-    elif pi_gap < 5:  bear += 4
-
-    sma200w = _safe(row.get('SMA200W_Ratio'))
-    if sma200w > 0:
-        if sma200w < 1.0:    bear += 15
-        elif sma200w < 1.3:  bear += 11
-        elif sma200w < 2.0:  bear += 5
-
-    puell = _safe(row.get('Puell_Proxy'))
-    if puell > 0:
-        if puell < 0.5:   bear += 12
-        elif puell < 0.8: bear += 8
-        elif puell < 1.5: bear += 3
-
-    rsi_m = _safe(row.get('RSI_Monthly'))
-    if rsi_m > 0:
-        if rsi_m < 30:    bear += 10
-        elif rsi_m < 40:  bear += 7
-        elif rsi_m < 55:  bear += 2
-
-    pl_ratio = _safe(row.get('PowerLaw_Ratio'))
-    if pl_ratio > 0:
-        if pl_ratio < 2.0:   bear += 5
-        elif pl_ratio < 5.0: bear += 3
-
-    mayer = _safe(row.get('Mayer_Multiple'))
-    if mayer > 0:
-        if mayer < 0.8:   bear += 5
-        elif mayer < 1.0: bear += 3
-
-    # ── 多方評分（頂部超熱鏡像指標）─────────────────────────────────────────
     bull = 0
 
+    def _row(name, val_str, b, b_max, u, u_max):
+        return {'name': name, 'value': val_str, 'bear': b, 'bear_max': b_max, 'bull': u, 'bull_max': u_max}
+
+    # ── 1. AHR999 囤幣指標 ───────────────────────────────────────────────────
+    ahr = _safe(row.get('AHR999'))
+    b, u = 0, 0
     if ahr > 0:
-        if ahr >= 2.0:    bull += 20
-        elif ahr >= 1.5:  bull += 13
-        elif ahr >= 1.2:  bull += 5
+        if   ahr < 0.45: b = 20
+        elif ahr < 0.8:  b = 13
+        elif ahr < 1.2:  b = 5
+        if   ahr >= 2.0: u = 20
+        elif ahr >= 1.5: u = 13
+        elif ahr >= 1.2: u = 5
+    bear += b; bull += u
+    rows.append(_row('AHR999 囤幣指標', f'{ahr:.3f}' if ahr else '—', b, 20, u, 20))
 
-    if mvrv >= 5.0:    bull += 18
-    elif mvrv >= 3.5:  bull += 12
-    elif mvrv >= 2.0:  bull += 4
+    # ── 2. MVRV Z-Score 代理 ────────────────────────────────────────────────
+    mvrv = _safe(row.get('MVRV_Z_Proxy'))
+    b, u = 0, 0
+    if   mvrv < -1.0: b = 18
+    elif mvrv <  0:   b = 12
+    elif mvrv <  2.0: b = 4
+    if   mvrv >= 5.0: u = 18
+    elif mvrv >= 3.5: u = 12
+    elif mvrv >= 2.0: u = 4
+    bear += b; bull += u
+    rows.append(_row('MVRV Z-Score 代理', f'{mvrv:.2f}', b, 18, u, 18))
 
-    if pi_gap >= 15:   bull += 15
-    elif pi_gap >= 10: bull += 10
-    elif pi_gap >= 5:  bull += 4
+    # ── 3. Pi Cycle Gap ─────────────────────────────────────────────────────
+    pi = _safe(row.get('PiCycle_Gap'))
+    b, u = 0, 0
+    if   pi < -10: b = 15
+    elif pi < -3:  b = 10
+    elif pi <  5:  b = 4
+    if   pi >= 15: u = 15
+    elif pi >= 10: u = 10
+    elif pi >=  5: u = 4
+    bear += b; bull += u
+    rows.append(_row('Pi Cycle Gap (SMA111/SMA350×2-1)', f'{pi:.1f}%', b, 15, u, 15))
 
-    if sma200w > 0:
-        if sma200w >= 5.0:    bull += 15
-        elif sma200w >= 4.0:  bull += 11
-        elif sma200w >= 3.0:  bull += 5
-        elif sma200w >= 2.0:  bull += 1
+    # ── 4. 200 週 SMA 比率 ──────────────────────────────────────────────────
+    sma = _safe(row.get('SMA200W_Ratio'))
+    b, u = 0, 0
+    if sma > 0:
+        if   sma < 1.0: b = 15
+        elif sma < 1.3: b = 11
+        elif sma < 2.0: b = 5
+        if   sma >= 5.0: u = 15
+        elif sma >= 4.0: u = 11
+        elif sma >= 3.0: u = 5
+        elif sma >= 2.0: u = 1
+    bear += b; bull += u
+    rows.append(_row('200 週 SMA 比率 (現價/1400日均)', f'{sma:.2f}x' if sma else '—', b, 15, u, 15))
 
+    # ── 5. Puell Multiple 代理 ──────────────────────────────────────────────
+    puell = _safe(row.get('Puell_Proxy'))
+    b, u = 0, 0
     if puell > 0:
-        if puell >= 4.0:   bull += 12
-        elif puell >= 2.0: bull += 8
-        elif puell >= 1.5: bull += 3
+        if   puell < 0.5: b = 12
+        elif puell < 0.8: b = 8
+        elif puell < 1.5: b = 3
+        if   puell >= 4.0: u = 12
+        elif puell >= 2.0: u = 8
+        elif puell >= 1.5: u = 3
+    bear += b; bull += u
+    rows.append(_row('Puell Multiple 代理 (現價/365日均)', f'{puell:.2f}' if puell else '—', b, 12, u, 12))
 
-    if rsi_m > 0:
-        if rsi_m >= 75:   bull += 10
-        elif rsi_m >= 65: bull += 7
-        elif rsi_m >= 55: bull += 2
+    # ── 6. 月線 RSI ─────────────────────────────────────────────────────────
+    rsi = _safe(row.get('RSI_Monthly'))
+    b, u = 0, 0
+    if rsi > 0:
+        if   rsi < 30: b = 10
+        elif rsi < 40: b = 7
+        elif rsi < 55: b = 2
+        if   rsi >= 75: u = 10
+        elif rsi >= 65: u = 7
+        elif rsi >= 55: u = 2
+    bear += b; bull += u
+    rows.append(_row('月線 RSI (14)', f'{rsi:.1f}' if rsi else '—', b, 10, u, 10))
 
-    if pl_ratio > 0:
-        if pl_ratio >= 15:  bull += 5
-        elif pl_ratio >= 10: bull += 3
-        elif pl_ratio >= 7:  bull += 1
+    # ── 7. 冪律支撐比率 ─────────────────────────────────────────────────────
+    pl = _safe(row.get('PowerLaw_Ratio'))
+    b, u = 0, 0
+    if pl > 0:
+        if   pl < 2.0: b = 5
+        elif pl < 5.0: b = 3
+        if   pl >= 15: u = 5
+        elif pl >= 10: u = 3
+        elif pl >=  7: u = 1
+    bear += b; bull += u
+    rows.append(_row('冪律支撐比率 (現價/PowerLaw)', f'{pl:.1f}x' if pl else '—', b, 5, u, 5))
 
+    # ── 8. Mayer 倍數（2 年均線）────────────────────────────────────────────
+    mayer = _safe(row.get('Mayer_Multiple'))
+    b, u = 0, 0
     if mayer > 0:
-        if mayer >= 2.4:   bull += 5
-        elif mayer >= 2.0: bull += 3
-        elif mayer >= 1.5: bull += 1
+        if   mayer < 0.8: b = 5
+        elif mayer < 1.0: b = 3
+        if   mayer >= 2.4: u = 5
+        elif mayer >= 2.0: u = 3
+        elif mayer >= 1.5: u = 1
+    bear += b; bull += u
+    rows.append(_row('Mayer 倍數 (現價/730日均)', f'{mayer:.2f}x' if mayer else '—', b, 5, u, 5))
 
-    raw = bull - bear
-    return max(-100, min(100, int(raw)))
+    score = max(-100, min(100, int(bull - bear)))
+    return score, bear, bull, rows
+
+
+def calculate_market_cycle_score(row) -> int:
+    """
+    市場多空複合評分 (-100 到 +100)
+    公式：score = 牛頂分數 − 熊底分數，clip 至 [-100, +100]
+    詳細指標分解請使用 calculate_market_cycle_score_breakdown()。
+    """
+    score, _, _, _ = calculate_market_cycle_score_breakdown(row)
+    return score

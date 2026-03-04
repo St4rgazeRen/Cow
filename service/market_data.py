@@ -394,13 +394,14 @@ def fetch_market_data():
             except Exception:
                 _tday_df = pd.DataFrame()
 
-        # 縫合：把補齊的數據 Concat 到歷史末端
+        # 縫合：把補齊的數據 Concat 到歷史末端，並寫回 CSV 避免下次重複抓取
         if not _tday_df.empty:
             if _tday_df.index.tz is not None:
                 _tday_df.index = _tday_df.index.tz_localize(None)
             btc_final = pd.concat([btc_final, _tday_df])
             btc_final = btc_final[~btc_final.index.duplicated(keep='last')]
             btc_final.sort_index(inplace=True)
+            btc_final.to_csv(BTC_CSV)
 
     if btc_final.empty:
         print("[Market] ❌ 五層備援均失敗（本地DB / Yahoo / Binance / Kraken / CryptoCompare）")

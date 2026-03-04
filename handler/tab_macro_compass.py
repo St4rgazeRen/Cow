@@ -28,6 +28,7 @@ from service.macro_data import fetch_m2_series, fetch_usdjpy, fetch_us_cpi_yoy, 
 from core.bear_bottom import (
     calculate_bear_bottom_score,
     calculate_market_cycle_score,
+    calculate_market_cycle_score_breakdown,
     score_series,
 )
 from core.season_forecast import (
@@ -378,13 +379,13 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
     整合 Tab 1 (牛市雷達) + Tab 5 (熊市底部獵人)，
     提供從短週期技術面到長週期鏈上指標的完整宏觀視角。
     """
-    st.subheader("🧭 長週期週期羅盤 (Macro Cycle Compass)")
+    st.subheader("🧭 長週期羅盤 (Macro Cycle Compass)")
     st.caption("整合長週期技術指標、鏈上數據與宏觀環境，量化市場所處的週期位置")
 
     # ══════════════════════════════════════════════════════════════
     # Section 0: 市場多空評分儀表
     # ══════════════════════════════════════════════════════════════
-    market_score = calculate_market_cycle_score(curr)
+    market_score, _bear_total, _bull_total, _breakdown_rows = calculate_market_cycle_score_breakdown(curr)
     bear_score_now, _ = calculate_bear_bottom_score(curr)
 
     # 確定市場相位 (0-5)
@@ -457,6 +458,32 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
         | 📉 轉折回調 | 跌破年線 | 觀望為主 |
         | ❄️ 深熊築底 | 空頭排列 | 定投積累 |
         """)
+
+    # ── 多空評分公式說明 expander ──────────────────────────────────────────────
+    with st.expander(
+        f"📐 多空評分計算公式（熊底 {_bear_total}/100 分 — 牛頂 {_bull_total}/100 分 = **{market_score:+d}**）",
+        expanded=False,
+    ):
+        st.caption(
+            "**公式**：多空評分 = 牛頂分數 − 熊底分數，clip 至 [-100, +100]。"
+            "8 大鏈上指標各自對熊底與牛頂分別打分，分數根據最新日線即時計算。"
+            "若分數長時間不變，屬正常現象（代表市場週期位置確實穩定在當前區間，非 bug）。"
+        )
+        _tbl = []
+        for _r in _breakdown_rows:
+            _net = _r['bull'] - _r['bear']
+            _tbl.append({
+                '指標': _r['name'],
+                '當前值': _r['value'],
+                f"熊底分 (/{_r['bear_max']})": _r['bear'],
+                f"牛頂分 (/{_r['bull_max']})": _r['bull'],
+                '淨貢獻 (牛-熊)': f"{_net:+d}",
+            })
+        st.dataframe(pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+        st.caption(
+            f"合計 → 熊底 {_bear_total} 分 ｜ 牛頂 {_bull_total} 分 ｜"
+            f" 最終分數 = {_bull_total} − {_bear_total} = **{market_score:+d}**"
+        )
 
     st.markdown("---")
 
