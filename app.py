@@ -14,6 +14,7 @@ v2.0 重構:
   - Tab 1 (牛市雷達) + Tab 5 (熊市底部獵人) 合併為「長週期週期羅盤」
   - 各 Tab 專屬參數移至對應 Tab 內部設定
 """
+import math
 import streamlit as st
 from datetime import datetime
 
@@ -44,8 +45,16 @@ from core.bear_bottom import calculate_bear_bottom_indicators
 # 0. 即時大盤速覽 Fragment（每 60 秒自動重跑，不觸發全頁重載）
 # ==============================================================================
 @st.fragment(run_every=60)
-def render_realtime_overview(btc, curr):
-    """即時大盤速覽：BTC 價格、恐懼貪婪、資金費率、TVL、AHR999、穩定幣市值"""
+def render_realtime_overview(
+    prev_close: float,
+    fallback_price: float,
+    rsi14: float,
+    sma50: float,
+    ahr999: float,
+):
+    """即時大盤速覽：BTC 價格、恐懼貪婪、資金費率、TVL、AHR999、穩定幣市值
+    只接收純量參數，避免大型 DataFrame 序列化導致 fragment 重跑失敗。
+    """
     try:
         rt = fetch_realtime_data()
     except Exception:
@@ -55,7 +64,7 @@ def render_realtime_overview(btc, curr):
             'open_interest', 'open_interest_usd', 'oi_change_pct',
         ]}
 
-    current_price = rt.get('price') or curr['close']
+    current_price = rt.get('price') or fallback_price
 
     _funding_rate = (
         rt['funding_rate'] if rt['funding_rate'] is not None
@@ -75,7 +84,7 @@ def render_realtime_overview(btc, curr):
             _fng_state += " 😨"
         _fng_source = "Alternative.me"
     else:
-        _fng_val    = calculate_fear_greed_proxy(curr['RSI_14'], current_price, curr['SMA_50'])
+        _fng_val    = calculate_fear_greed_proxy(rsi14, current_price, sma50)
         _fng_state  = "Proxy Mode"
         _fng_source = "Antigravity Proxy"
 
@@ -85,13 +94,12 @@ def render_realtime_overview(btc, curr):
     st.markdown("### 📊 今日大盤速覽")
     _c1, _c2, _c3, _c4, _c5, _c6 = st.columns(6)
 
-    _prev_close = btc['close'].iloc[-2] if len(btc) > 1 else current_price
-    _price_chg  = (current_price - _prev_close) / _prev_close * 100
+    _price_chg = (current_price - prev_close) / prev_close * 100
     _c1.metric(
         "💰 BTC 當前價格",
         f"${current_price:,.0f}",
         f"{_price_chg:+.2f}%",
-        delta_color="normal" if _price_chg >= 0 else "inverse",
+        delta_color="normal",
     )
 
     _c2.metric(
@@ -113,10 +121,9 @@ def render_realtime_overview(btc, curr):
     _tvl_display = f"${_tvl_val/1e9:.2f}B" if _tvl_val > 1e9 else f"${_tvl_val:.2f}M"
     _c4.metric("🏦 BTC 生態 TVL", _tvl_display, "↑ 鏈上活躍" if _tvl_val > 0 else "—")
 
-    _ahr_now = curr.get('AHR999', float('nan'))
-    if _ahr_now == _ahr_now:  # not nan
-        _ahr_state = "🟢 抄底區" if _ahr_now < 0.45 else ("🟡 合理區" if _ahr_now < 1.2 else "🔴 高估區")
-        _c5.metric("📐 AHR999", f"{_ahr_now:.3f}", _ahr_state)
+    if not math.isnan(ahr999):
+        _ahr_state = "🟢 抄底區" if ahr999 < 0.45 else ("🟡 合理區" if ahr999 < 1.2 else "🔴 高估區")
+        _c5.metric("📐 AHR999", f"{ahr999:.3f}", _ahr_state)
     else:
         _c5.metric("📐 AHR999", "—", "計算中")
 
@@ -189,7 +196,7 @@ with st.spinner("正在連線至戰情室數據庫..."):
         _data_warnings.append(f"即時數據載入失敗，使用模擬數據: {e}")
 
     curr          = btc.iloc[-1]
-    current_price = realtime_data.get('price') or curr['close']
+    current_price = float(realtime_data.get('price') or curr['close'])
 
     # Fallback 數值
     funding_rate = (
@@ -213,7 +220,11 @@ with st.spinner("正在連線至戰情室數據庫..."):
             fng_state += " 😨"
         fng_source = "Alternative.me"
     else:
-        fng_val    = calculate_fear_greed_proxy(curr['RSI_14'], current_price, curr['SMA_50'])
+        fng_val    = calculate_fear_greed_proxy(
+            float(curr['RSI_14']) if 'RSI_14' in curr.index else 50.0,
+            current_price,
+            float(curr['SMA_50']) if 'SMA_50' in curr.index else float(curr['close']),
+        )
         fng_state  = "Proxy Mode"
         fng_source = "Antigravity Proxy"
 
@@ -241,7 +252,13 @@ if _data_warnings:
 # ==============================================================================
 # 4. 今日大盤速覽 (Global Overview Panel) — 每 60 秒 fragment 自動更新
 # ==============================================================================
-render_realtime_overview(btc, curr)
+render_realtime_overview(
+    prev_close=float(btc['close'].iloc[-2]) if len(btc) > 1 else float(curr['close']),
+    fallback_price=float(curr['close']),
+    rsi14=float(curr['RSI_14']) if 'RSI_14' in curr.index else 50.0,
+    sma50=float(curr['SMA_50']) if 'SMA_50' in curr.index else float(curr['close']),
+    ahr999=float(curr['AHR999']) if 'AHR999' in curr.index else math.nan,
+)
 
 # ==============================================================================
 # 5. Tabs
@@ -266,6 +283,7 @@ with tab2:
         open_interest=realtime_data.get('open_interest'),
         open_interest_usd=realtime_data.get('open_interest_usd'),
         oi_change_pct=realtime_data.get('oi_change_pct'),
+        current_price=current_price,
     )
 
 with tab3:

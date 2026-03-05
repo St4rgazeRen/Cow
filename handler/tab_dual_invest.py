@@ -20,23 +20,24 @@ import numpy as np
 from strategy.dual_invest import get_current_suggestion, calculate_ladder_strategy
 
 
-def _make_dual_cache_key(btc: pd.DataFrame, t_days: int) -> str:
-    """Tab 3 快取鍵：數據最後時間戳 + 產品期限"""
+def _make_dual_cache_key(btc: pd.DataFrame, t_days: int, current_price: float) -> str:
+    """Tab 3 快取鍵：數據最後時間戳 + 產品期限 + 現價千位數（千元級變化才重建圖表）"""
     last_idx = str(btc.index[-1]) if not btc.empty else "empty"
-    raw = f"{last_idx}|{len(btc)}|t{t_days}"
+    price_bucket = int(current_price // 1000)  # 每移動 $1,000 才重建
+    raw = f"{last_idx}|{len(btc)}|t{t_days}|p{price_bucket}"
     return hashlib.md5(raw.encode()).hexdigest()[:16]
 
 
 def _build_ladder_chart(btc: pd.DataFrame, suggestion: dict,
                         curr_row: pd.Series, t_days: int,
-                        defi_yield: float) -> go.Figure:
+                        defi_yield: float, current_price: float) -> go.Figure:
     """
     建立行權價梯形視覺化圖（2 行子圖）。
     Row 1 (主圖): K線 (近 60 日) + EMA20 + ATR Band + 行權梯
     Row 2 (輔助): 各檔 APY 橫向對比長條圖
     """
     df60 = btc.tail(60).copy()
-    price = curr_row['close']
+    price = current_price
     atr   = curr_row['ATR']
 
     fig = make_subplots(
@@ -176,14 +177,15 @@ def render(btc, realtime_data):
         f"  若 APY(年化) 低於此值，建議改為單純放貸。"
     )
 
-    suggestion = get_current_suggestion(btc, t_days=t_days)
-    curr_row   = btc.iloc[-1]
+    suggestion    = get_current_suggestion(btc, t_days=t_days)
+    curr_row      = btc.iloc[-1]
+    current_price = realtime_data.get('price') or float(curr_row['close'])
 
     # ──────────────────────────────────────────────────────────────
     # [Task #7] 行權梯形圖（Session State 快取）
-    # 切換期限 (t_days) 時 cache_key 改變 → 重新計算
+    # 切換期限 (t_days) 或現價移動 $1,000 時 cache_key 改變 → 重新計算
     # ──────────────────────────────────────────────────────────────
-    cache_key    = _make_dual_cache_key(btc, t_days)
+    cache_key    = _make_dual_cache_key(btc, t_days, current_price)
     ss_hash_key  = "tab_dual_cache_key"
     ss_chart_key = f"tab_dual_fig_{cache_key}"
 
@@ -191,7 +193,7 @@ def render(btc, realtime_data):
             and ss_chart_key in st.session_state):
         fig_ladder = st.session_state[ss_chart_key]
     else:
-        fig_ladder = _build_ladder_chart(btc, suggestion, curr_row, t_days, defi_yield)
+        fig_ladder = _build_ladder_chart(btc, suggestion, curr_row, t_days, defi_yield, current_price)
         st.session_state[ss_chart_key] = fig_ladder
         st.session_state[ss_hash_key]  = cache_key
 

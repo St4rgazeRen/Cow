@@ -190,7 +190,8 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> 
 
 def render(btc, curr, funding_rate, proxies,
            capital=None, risk_per_trade=None,
-           open_interest=None, open_interest_usd=None, oi_change_pct=None):
+           open_interest=None, open_interest_usd=None, oi_change_pct=None,
+           current_price=None):
     """
     波段狙擊 Tab 渲染入口
     """
@@ -436,7 +437,7 @@ def render(btc, curr, funding_rate, proxies,
             step=0.1, max_value=10.0,
         )
 
-    entry_price  = st.number_input("預計進場價格 (預設現價)", value=float(curr['close']))
+    entry_price  = st.number_input("預計進場價格 (預設現價)", value=float(current_price or curr['close']))
     manual_stop  = st.number_input("止損價格 (預設系統建議)", value=float(stop_price))
 
     if st.button("計算建議倉位"):
