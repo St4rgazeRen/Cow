@@ -85,6 +85,23 @@ def has_local_data() -> bool:
     return len(get_available_years()) > 0
 
 
+def get_latest_local_price() -> float | None:
+    """從本地 15m DB 取出最新一筆收盤價（不帶 cache，供即時備援用）。"""
+    for year in reversed(get_available_years()):
+        db_path = os.path.join(DB_DIR, f"btcusdt_15m_{year}.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT close FROM klines ORDER BY open_time DESC LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if row:
+                return float(row[0])
+        except Exception:
+            continue
+    return None
+
+
 @st.cache_data(ttl=86400)
 def read_btc_15m(start_date: str = "2017-01-01", end_date: str = None) -> pd.DataFrame:
     """

@@ -64,7 +64,9 @@ def render_realtime_overview(
             'open_interest', 'open_interest_usd', 'oi_change_pct',
         ]}
 
-    current_price = rt.get('price') or fallback_price
+    _rt_price = rt.get('price')
+    current_price = _rt_price or fallback_price
+    _price_source = rt.get('price_source') or "歷史收盤"
 
     _funding_rate = (
         rt['funding_rate'] if rt['funding_rate'] is not None
@@ -101,14 +103,15 @@ def render_realtime_overview(
         f"{_price_chg:+.2f}%",
         delta_color="normal",
     )
+    _c1.caption(f"來源：{_price_source}")
 
     _c2.metric(
         "😱 恐懼貪婪指數",
         f"{_fng_val:.0f}/100",
         _fng_state,
         delta_color="normal" if _fng_val >= 50 else "inverse",
-        help=f"數據來源: {_fng_source}",
     )
+    _c2.caption(f"來源：{_fng_source}")
 
     _fr_delta = "🔥 多頭過熱" if _funding_rate > 0.03 else ("🟢 中性" if _funding_rate > 0 else "❄️ 空頭")
     _c3.metric(
@@ -117,15 +120,18 @@ def render_realtime_overview(
         _fr_delta,
         delta_color="inverse" if _funding_rate > 0.03 else "normal",
     )
+    _c3.caption(f"來源：{rt.get('funding_rate_source', '模擬值')}")
 
     _tvl_display = f"${_tvl_val/1e9:.2f}B" if _tvl_val > 1e9 else f"${_tvl_val:.2f}M"
     _c4.metric("🏦 BTC 生態 TVL", _tvl_display, "↑ 鏈上活躍" if _tvl_val > 0 else "—")
+    _c4.caption(f"來源：{rt.get('tvl_source', '模擬值')}")
 
     if not math.isnan(ahr999):
         _ahr_state = "🟢 抄底區" if ahr999 < 0.45 else ("🟡 合理區" if ahr999 < 1.2 else "🔴 高估區")
         _c5.metric("📐 AHR999", f"{ahr999:.3f}", _ahr_state)
     else:
         _c5.metric("📐 AHR999", "—", "計算中")
+    _c5.caption("來源：歷史計算")
 
     _stab_mcap = rt.get('stablecoin_mcap')
     if _stab_mcap and _stab_mcap > 0:
@@ -134,8 +140,10 @@ def render_realtime_overview(
             f"${_stab_mcap:.1f}B",
             "↑ 流動性充沛" if _stab_mcap > 100 else "流動性一般",
         )
+        _c6.caption("來源：DeFiLlama")
     else:
         _c6.metric("💵 穩定幣市值", "—", "連線中")
+        _c6.caption("來源：連線失敗")
 
     st.markdown("---")
 
