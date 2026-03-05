@@ -29,7 +29,6 @@ if not SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-@st.cache_data(ttl=60)
 def fetch_realtime_data():
     """
     即時抓取:
