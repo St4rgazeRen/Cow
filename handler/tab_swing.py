@@ -34,6 +34,11 @@ CARD_STYLE = """
 """
 CARD_END = "</div>"
 
+def _ma_label(col_key: str) -> str:
+    """將欄位名稱轉為人類可讀標籤，避免 SMA_50 / EMA_20 等原始名稱造成混淆"""
+    return col_key.replace("_", " ")
+
+
 def _make_swing_cache_key(btc: pd.DataFrame, exit_ma_key: str) -> str:
     """Tab 2 圖表快取鍵，基於 BTC 最後一筆時間戳、總長度與出場均線選擇"""
     last_idx = str(btc.index[-1]) if not btc.empty else "empty"
@@ -84,17 +89,21 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> 
         decreasing_line_color='#ef5350',
     ), row=1, col=1)
 
-    # EMA 20（核心均線，進場依據）
+    # EMA 20（核心均線，進場依據；若同時選為防守線則合併標籤）
+    _ema20_label = (
+        'EMA 20 (進場 ＆ 防守線)' if exit_ma_key == 'EMA_20' else 'EMA 20 (進場線)'
+    )
     fig.add_trace(go.Scatter(
         x=df.index, y=df['EMA_20'],
-        line=dict(color='#ffeb3b', width=2), name='EMA 20 (進場線)',
+        line=dict(color='#ffeb3b', width=2), name=_ema20_label,
     ), row=1, col=1)
 
-    # 用戶自訂的波段防守線（出場依據）
-    if exit_ma_key in df.columns:
+    # 用戶自訂的波段防守線（出場依據）；EMA_20 已在上方繪製，不重複
+    if exit_ma_key in df.columns and exit_ma_key != 'EMA_20':
         fig.add_trace(go.Scatter(
             x=df.index, y=df[exit_ma_key],
-            line=dict(color='#00e5ff', width=1.5, dash='dash'), name=f'{exit_ma_key} (防守線)',
+            line=dict(color='#00e5ff', width=1.5, dash='dash'),
+            name=f'{_ma_label(exit_ma_key)} (防守線)',
         ), row=1, col=1)
 
     # SMA 200（趨勢濾網）
@@ -137,7 +146,7 @@ def _build_swing_chart(btc: pd.DataFrame, curr: pd.Series, exit_ma_key: str) -> 
             if not exit_pts.empty:
                 fig.add_trace(go.Scatter(
                     x=exit_pts.index, y=exit_pts['high'] * 1.01, # 稍微調高避免被K線遮擋
-                    mode='markers', name=f'出場信號 🔴 (破 {exit_ma_key})',
+                    mode='markers', name=f'出場信號 🔴 (破 {_ma_label(exit_ma_key)})',
                     marker=dict(
                         color='#ff1744',       # 極度亮眼的螢光紅
                         symbol='triangle-down', 
@@ -299,7 +308,7 @@ def render(btc, curr, funding_rate, proxies,
     is_exit = curr['close'] < curr.get(exit_ma_key, curr['close'])
     e_col1, e_col2, e_col3 = st.columns(3)
     with e_col1:
-        st.markdown(make_condition_card(f"① 跌破防守線 (Price < {exit_ma_key})", not is_exit, pass_text="✅ 安全 (未跌破)", fail_text="🔴 觸發出場"), unsafe_allow_html=True)
+        st.markdown(make_condition_card(f"① 跌破防守線 (Price < {_ma_label(exit_ma_key)})", not is_exit, pass_text="✅ 安全 (未跌破)", fail_text="🔴 觸發出場"), unsafe_allow_html=True)
 
     # ──────────────────────────────────────────────────────────────
     # 新增：綜合波段策略建議區塊
@@ -377,17 +386,17 @@ def render(btc, curr, funding_rate, proxies,
         
         m_col1, m_col2 = st.columns(2)
         m_col1.metric("EMA 20 (進場線)", f"${ema_20:,.0f}", f"乖離率 {dist_pct:.2f}%")
-        m_col2.metric(f"{exit_ma_key} (防守線)", f"${stop_price:,.0f}")
+        m_col2.metric(f"{_ma_label(exit_ma_key)} (防守線)", f"${stop_price:,.0f}")
 
         if is_exit:
-            st.error(f"🔴 **賣出訊號 (SELL)**\n\n跌破波段防守線 ({exit_ma_key})，趨勢轉弱。")
+            st.error(f"🔴 **賣出訊號 (SELL)**\n\n跌破波段防守線 ({_ma_label(exit_ma_key)})，趨勢轉弱。")
             st.metric("建議回補價", f"${curr['BB_Lower']:,.0f}", "布林下軌支撐")
         elif can_long:
             st.success("🟢 **買進訊號 (BUY)**\n\n進場條件全數通過，多頭動能確認！")
             st.metric("建議止盈價", f"${curr['BB_Upper']:,.0f}", "布林上軌壓力")
         else:
             st.info("🔵 **持倉續抱 / 觀望 (HOLD / WAIT)**\n\n等待明確進出場信號。")
-            st.metric("波段防守價", f"${stop_price:,.0f}", f"{exit_ma_key}")
+            st.metric("波段防守價", f"${stop_price:,.0f}", f"{_ma_label(exit_ma_key)}")
             
         st.markdown(CARD_END, unsafe_allow_html=True)
 
@@ -399,7 +408,7 @@ def render(btc, curr, funding_rate, proxies,
             st.markdown(f"- **${heat['price']:,.0f}** ({heat['side']} {heat['vol']})")
 
         st.metric(
-            f"建議防守價 ({exit_ma_key})", f"${stop_price:,.0f}",
+            f"建議防守價 ({_ma_label(exit_ma_key)})", f"${stop_price:,.0f}",
             f"預計虧損幅度 -{risk_dist_pct * 100:.2f}%",
         )
         if risk_dist_pct < 0:

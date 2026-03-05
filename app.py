@@ -120,7 +120,7 @@ def render_realtime_overview(
         _fr_delta,
         delta_color="inverse" if _funding_rate > 0.03 else "normal",
     )
-    _c3.caption(f"來源：{rt.get('funding_rate_source', '模擬值')}")
+    _c3.caption(f"來源：{rt.get('funding_rate_source') or '模擬值'}")
 
     _tvl_display = f"${_tvl_val/1e9:.2f}B" if _tvl_val > 1e9 else f"${_tvl_val:.2f}M"
     _c4.metric("🏦 BTC 生態 TVL", _tvl_display, "↑ 鏈上活躍" if _tvl_val > 0 else "—")

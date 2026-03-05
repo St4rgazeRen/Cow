@@ -25,6 +25,7 @@ CUSTOM_CSS = """
     .metric-title  { color: #888; font-size: 0.9rem; margin-bottom: 5px; }
     .metric-value  { color: #fff; font-size: 1.5rem; font-weight: bold; }
     .metric-delta  { font-size: 0.9rem; }
+    .metric-source { color: #555; font-size: 0.7rem; margin-top: 6px; }
     .positive { color: #00ff88; }
     .negative { color: #ff4b4b; }
     .neutral  { color: #aaaaaa; }

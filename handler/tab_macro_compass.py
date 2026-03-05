@@ -547,10 +547,17 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
 
         # Row 3: 資金費率 + RSI
         if not fund_hist.empty:
-            fund_sub  = fund_hist.reindex(_cdf.index, method='nearest')
-            fr_colors = ['#00ff88' if v > 0 else '#ff4b4b' for v in fund_sub['fundingRate']]
+            fund_sub = fund_hist.reindex(_cdf.index, method='nearest')
+            # 資金費率歷史只從 2021 年起有資料（Binance 永續合約），
+            # reindex(nearest) 會將更早的日期全部填為第一筆定值，需清除
+            fund_sub.loc[fund_sub.index < fund_hist.index[0]] = np.nan
+            valid_mask = fund_sub['fundingRate'].notna()
+            fr_colors = ['#00ff88' if v > 0 else '#ff4b4b'
+                         for v in fund_sub.loc[valid_mask, 'fundingRate']]
             fig_main.add_trace(go.Bar(
-                x=fund_sub.index, y=fund_sub['fundingRate'], marker_color=fr_colors, name='Funding Rate %',
+                x=fund_sub.index[valid_mask],
+                y=fund_sub.loc[valid_mask, 'fundingRate'],
+                marker_color=fr_colors, name='Funding Rate %',
             ), row=3, col=1)
         if 'RSI_14' in _cdf.columns and _cdf['RSI_14'].notna().any():
             fig_main.add_trace(go.Scatter(
@@ -606,16 +613,17 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
 
     l1_cols = st.columns(3)
     l1_data = [
-        ("趨勢結構",    struct_state,  f"MA200 斜率 {'↗️ 上升' if is_rising else '↘️ 下降'}"),
-        ("道氏理論",    dow_state,     "近 20 日 vs 前 20 日高點"),
-        (f"情緒 ({fng_source})", f"{fng_val:.0f}/100", fng_state),
+        ("趨勢結構",    struct_state,  f"MA200 斜率 {'↗️ 上升' if is_rising else '↘️ 下降'}", "本地計算 (SMA200 斜率)"),
+        ("道氏理論",    dow_state,     "近 20 日 vs 前 20 日高點",                            "本地計算 (高低點比較)"),
+        (f"情緒指數",   f"{fng_val:.0f}/100", fng_state,                                     fng_source),
     ]
-    for col, (title, val, delta) in zip(l1_cols, l1_data):
+    for col, (title, val, delta, src) in zip(l1_cols, l1_data):
         col.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">{title}</div>
             <div class="metric-value">{val}</div>
             <div class="metric-delta">{delta}</div>
+            <div class="metric-source">來源：{src}</div>
         </div>""", unsafe_allow_html=True)
 
     # ── Level 2: 機構視角 ────────────────────────────────────────
@@ -629,21 +637,24 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
     ahr_state = ("🟢 抄底區間" if ahr_val < 0.45 else ("🟡 合理區間" if ahr_val < 1.2 else "🔴 高估區間"))
     mvrv_state = ("🔥 過熱頂部" if mvrv_z > 3.0 else ("🟢 價值低估" if mvrv_z < 0 else "中性區域"))
 
+    _tvl_source = realtime_data.get('tvl_source') or 'DeFiLlama'
+    _fr_source  = realtime_data.get('funding_rate_source') or '模擬值'
     l2_cols = st.columns(5)
     l2_data = [
-        ("AHR999 囤幣指標", f"{ahr_val:.3f}",                    ahr_state),
-        ("MVRV Z-Score",    f"{mvrv_z:.2f}",                     mvrv_state),
+        ("AHR999 囤幣指標", f"{ahr_val:.3f}",                    ahr_state,                                    "本地計算 (Price/SMA200 × Price/PowerLaw)"),
+        ("MVRV Z-Score",    f"{mvrv_z:.2f}",                     mvrv_state,                                   "本地計算 (Price-SMA200)/σ200"),
         ("BTC 生態 TVL",    f"${tvl_val/1e9:.2f}B" if tvl_val>1e9 else f"${tvl_val:.2f}B",
-                                                                  "↑ 持續增長" if tvl_val>0 else "↓ 資金流出"),
-        ("ETF 淨流量(24h)", f"{etf_flow:+.1f}M",                 "↑ 機構買盤" if etf_flow>0 else "↓ 機構拋壓"),
-        ("資金費率",        f"{funding_rate:.4f}%",               fr_state),
+                                                                  "↑ 持續增長" if tvl_val>0 else "↓ 資金流出", _tvl_source),
+        ("ETF 淨流量(24h)", f"{etf_flow:+.1f}M",                 "↑ 機構買盤" if etf_flow>0 else "↓ 機構拋壓", "模擬估算 (價格變化 Proxy)"),
+        ("資金費率",        f"{funding_rate:.4f}%",               fr_state,                                    _fr_source),
     ]
-    for col, (title, val, delta) in zip(l2_cols, l2_data):
+    for col, (title, val, delta, src) in zip(l2_cols, l2_data):
         col.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">{title}</div>
             <div class="metric-value">{val}</div>
             <div class="metric-delta">{delta}</div>
+            <div class="metric-source">來源：{src}</div>
         </div>""", unsafe_allow_html=True)
 
     # ── Level 3: 宏觀視角 ────────────────────────────────────────
@@ -662,47 +673,46 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
             if len(comm) >= 90:
                 corr = _btc2.loc[comm]['close'].rolling(90).corr(_dxy2.loc[comm]['close']).iloc[-1]
                 corr_val = f"{corr:.2f}" if corr == corr else "—"
-                st.metric("BTC vs DXY 90d", corr_val, "高度負相關 (正常)" if corr == corr and corr < -0.5 else "相關性減弱")
+                st.metric("BTC vs DXY 90d 相關係數", corr_val, "負相關 (正常)" if corr == corr and corr < -0.5 else "相關性減弱")
+                st.caption("來源：本地計算 (Yahoo Finance DXY)")
             else:
                 st.metric("BTC vs DXY 90d", "—", "數據不足")
         else:
-            fb = _FALLBACK["dxy"]
-            st.metric("BTC vs DXY 90d", "—", f"⚠️ 備援 {fb['date']}")
+            st.metric("BTC vs DXY 90d", "—", "DXY 數據暫不可用")
 
     # M2
     with m3_col2:
         m2_df = fetch_m2_series()
-        if not m2_df.empty and not getattr(m2_df, 'is_fallback', False):
-            m2_val = m2_df['m2_billions'].iloc[-1]
-            st.metric("美國 M2", f"${m2_val:,.0f}B", "FRED WM2NS")
-        elif not m2_df.empty:
-            fb_val = m2_df['m2_billions'].iloc[-1]
-            st.metric("美國 M2 (備援)", f"${fb_val:,.0f}B", "⚠️ FRED 連線失敗")
+        if not m2_df.empty:
+            m2_val    = m2_df['m2_billions'].iloc[-1]
+            m2_is_fb  = getattr(m2_df, 'is_fallback', False)
+            m2_src    = f"備援值 ({_FALLBACK['m2']['date']})" if m2_is_fb else "FRED WM2NS"
+            st.metric("美國 M2", f"${m2_val:,.0f}B", "貨幣供應量")
+            st.caption(f"來源：{m2_src}")
         else:
-            fb = _FALLBACK["m2"]
-            st.metric("美國 M2 (備援)", f"${fb['value']:,.0f}B", f"⚠️ 靜態值 {fb['date']}")
+            st.metric("美國 M2", "—", "數據暫不可用")
 
     # JPY
     with m3_col3:
         jpy = fetch_usdjpy()
         if jpy.get('rate') is not None:
-            fb_badge = " ⚠️" if jpy.get('is_fallback') else ""
-            st.metric(f"🇯🇵 USD/JPY{fb_badge}", f"¥{jpy['rate']:.2f}",
+            jpy_src = jpy.get('source', '備援值')
+            st.metric("🇯🇵 USD/JPY", f"¥{jpy['rate']:.2f}",
                       f"{jpy['change_pct']:+.2f}% {jpy['trend']}")
+            st.caption(f"來源：{jpy_src}")
         else:
-            fb = _FALLBACK["usdjpy"]
-            st.metric(f"🇯🇵 USD/JPY (備援)", f"¥{fb['value']:.2f}", f"⚠️ {fb['date']}")
+            st.metric("🇯🇵 USD/JPY", "—", "數據暫不可用")
 
     # CPI
     with m3_col4:
         cpi = fetch_us_cpi_yoy()
         if cpi.get('yoy_pct') is not None:
-            fb_badge = " ⚠️" if cpi.get('is_fallback') else ""
-            st.metric(f"🇺🇸 CPI YoY ({cpi['latest_date']}){fb_badge}",
+            cpi_src = cpi.get('source', '備援值')
+            st.metric(f"🇺🇸 CPI YoY ({cpi['latest_date']})",
                       f"{cpi['yoy_pct']:.1f}%", cpi['trend'])
+            st.caption(f"來源：{cpi_src}")
         else:
-            fb = _FALLBACK["cpi"]
-            st.metric("🇺🇸 CPI YoY (備援)", f"{fb['value']:.1f}%", f"⚠️ {fb['date']}")
+            st.metric("🇺🇸 CPI YoY", "—", "數據暫不可用")
 
     st.markdown("---")
 
@@ -763,8 +773,9 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
         """)
     st.markdown("---")
 
-    # 八大指標卡片
+    # 八大指標卡片（來源全部為本地計算）
     st.subheader("C1. 八大指標評分明細")
+    st.caption("所有指標均由本地歷史 K 線計算，無需外部 API")
     indicator_cols = st.columns(4)
     for idx, (key, sig) in enumerate(curr_signals.items()):
         col = indicator_cols[idx % 4]
@@ -778,6 +789,7 @@ def render(btc, chart_df, tvl_hist, stable_hist, fund_hist,
                 <div style="background:{score_color};width:{bar_pct:.0f}%;height:6px;border-radius:4px;"></div>
             </div>
             <div style="color:#888;font-size:0.75rem;text-align:right;">{sig['score']}/{sig['max']} 分</div>
+            <div class="metric-source">來源：本地計算</div>
         </div>
         """, unsafe_allow_html=True)
 

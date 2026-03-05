@@ -116,6 +116,47 @@ def fetch_realtime_data():
     except Exception as e:
         print(f"Binance spot direct API error: {e}")
 
+    # 1d. Bybit 資金費率備援（Binance fapi 遭封鎖時）
+    if data['funding_rate'] is None:
+        try:
+            r_bybit = requests.get(
+                "https://api.bybit.com/v5/market/tickers",
+                params={"category": "linear", "symbol": "BTCUSDT"},
+                timeout=5,
+                verify=SSL_VERIFY,
+                headers=headers,
+            )
+            if r_bybit.status_code == 200:
+                result = r_bybit.json()
+                if result.get("retCode") == 0:
+                    for item in result.get("result", {}).get("list", []):
+                        if item.get("symbol") == "BTCUSDT":
+                            data['funding_rate'] = float(item['fundingRate']) * 100
+                            data['funding_rate_source'] = "Bybit"
+                            print("[Realtime] Bybit 備援資金費率成功")
+                            break
+        except Exception as e:
+            print(f"Bybit funding rate error: {e}")
+
+    # 1e. OKX 資金費率備援（Bybit 也失敗時）
+    if data['funding_rate'] is None:
+        try:
+            r_okx = requests.get(
+                "https://www.okx.com/api/v5/public/funding-rate",
+                params={"instId": "BTC-USDT-SWAP"},
+                timeout=5,
+                verify=SSL_VERIFY,
+                headers=headers,
+            )
+            if r_okx.status_code == 200:
+                okx_data = r_okx.json()
+                if okx_data.get("code") == "0" and okx_data.get("data"):
+                    data['funding_rate'] = float(okx_data['data'][0]['fundingRate']) * 100
+                    data['funding_rate_source'] = "OKX"
+                    print("[Realtime] OKX 備援資金費率成功")
+        except Exception as e:
+            print(f"OKX funding rate error: {e}")
+
     # 1b. Kraken 現貨備援（與 market_data.py 同源，企業防火牆較少封鎖）
     if data['price'] is None:
         try:
