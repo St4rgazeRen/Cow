@@ -16,7 +16,6 @@ v2.0 重構:
 """
 import streamlit as st
 from datetime import datetime
-from streamlit_autorefresh import st_autorefresh
 
 # Handler 層
 from handler.layout import setup_page, render_sidebar
@@ -40,12 +39,104 @@ from service.mock import (
 from core.indicators import calculate_technical_indicators, calculate_ahr999
 from core.bear_bottom import calculate_bear_bottom_indicators
 
+
+# ==============================================================================
+# 0. 即時大盤速覽 Fragment（每 60 秒自動重跑，不觸發全頁重載）
+# ==============================================================================
+@st.fragment(run_every=60)
+def render_realtime_overview(btc, curr):
+    """即時大盤速覽：BTC 價格、恐懼貪婪、資金費率、TVL、AHR999、穩定幣市值"""
+    try:
+        rt = fetch_realtime_data()
+    except Exception:
+        rt = {k: None for k in [
+            'price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield',
+            'fng_value', 'fng_class',
+            'open_interest', 'open_interest_usd', 'oi_change_pct',
+        ]}
+
+    current_price = rt.get('price') or curr['close']
+
+    _funding_rate = (
+        rt['funding_rate'] if rt['funding_rate'] is not None
+        else get_mock_funding_rate()
+    )
+    _tvl_val = (
+        rt['tvl'] if rt['tvl'] is not None
+        else get_mock_tvl(current_price)
+    )
+
+    if rt['fng_value']:
+        _fng_val   = rt['fng_value']
+        _fng_state = rt['fng_class']
+        if "Greed" in _fng_state:
+            _fng_state += " 🤑"
+        elif "Fear" in _fng_state:
+            _fng_state += " 😨"
+        _fng_source = "Alternative.me"
+    else:
+        _fng_val    = calculate_fear_greed_proxy(curr['RSI_14'], current_price, curr['SMA_50'])
+        _fng_state  = "Proxy Mode"
+        _fng_source = "Antigravity Proxy"
+
+    st.caption(
+        f"數據更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 核心版本: Antigravity v4"
+    )
+    st.markdown("### 📊 今日大盤速覽")
+    _c1, _c2, _c3, _c4, _c5, _c6 = st.columns(6)
+
+    _prev_close = btc['close'].iloc[-2] if len(btc) > 1 else current_price
+    _price_chg  = (current_price - _prev_close) / _prev_close * 100
+    _c1.metric(
+        "💰 BTC 當前價格",
+        f"${current_price:,.0f}",
+        f"{_price_chg:+.2f}%",
+        delta_color="normal" if _price_chg >= 0 else "inverse",
+    )
+
+    _c2.metric(
+        "😱 恐懼貪婪指數",
+        f"{_fng_val:.0f}/100",
+        _fng_state,
+        delta_color="normal" if _fng_val >= 50 else "inverse",
+        help=f"數據來源: {_fng_source}",
+    )
+
+    _fr_delta = "🔥 多頭過熱" if _funding_rate > 0.03 else ("🟢 中性" if _funding_rate > 0 else "❄️ 空頭")
+    _c3.metric(
+        "💸 資金費率",
+        f"{_funding_rate:.4f}%",
+        _fr_delta,
+        delta_color="inverse" if _funding_rate > 0.03 else "normal",
+    )
+
+    _tvl_display = f"${_tvl_val/1e9:.2f}B" if _tvl_val > 1e9 else f"${_tvl_val:.2f}M"
+    _c4.metric("🏦 BTC 生態 TVL", _tvl_display, "↑ 鏈上活躍" if _tvl_val > 0 else "—")
+
+    _ahr_now = curr.get('AHR999', float('nan'))
+    if _ahr_now == _ahr_now:  # not nan
+        _ahr_state = "🟢 抄底區" if _ahr_now < 0.45 else ("🟡 合理區" if _ahr_now < 1.2 else "🔴 高估區")
+        _c5.metric("📐 AHR999", f"{_ahr_now:.3f}", _ahr_state)
+    else:
+        _c5.metric("📐 AHR999", "—", "計算中")
+
+    _stab_mcap = rt.get('stablecoin_mcap')
+    if _stab_mcap and _stab_mcap > 0:
+        _c6.metric(
+            "💵 穩定幣市值",
+            f"${_stab_mcap:.1f}B",
+            "↑ 流動性充沛" if _stab_mcap > 100 else "流動性一般",
+        )
+    else:
+        _c6.metric("💵 穩定幣市值", "—", "連線中")
+
+    st.markdown("---")
+
+
 # ==============================================================================
 # 1. 頁面初始化
 # ==============================================================================
 setup_page()
-# 每 60 秒自動重整頁面，確保 BTC 即時價格與 realtime_data 持續更新
-st_autorefresh(interval=60_000, limit=None, key="btc_price_autorefresh")
 sidebar_params = render_sidebar()
 
 # v2.0: 只從 sidebar 取日期區間（其餘參數已移至各 Tab）
@@ -141,9 +232,6 @@ with st.spinner("正在連線至戰情室數據庫..."):
 # 3. 頁面標題
 # ==============================================================================
 st.title("🦅 比特幣投資戰情室")
-st.caption(
-    f"數據更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 核心版本: Antigravity v4"
-)
 
 if _data_warnings:
     with st.expander(f"⚠️ {len(_data_warnings)} 個數據警告（不影響核心功能）", expanded=False):
@@ -151,69 +239,9 @@ if _data_warnings:
             st.warning(w)
 
 # ==============================================================================
-# 4. 今日大盤速覽 (Global Overview Panel)
+# 4. 今日大盤速覽 (Global Overview Panel) — 每 60 秒 fragment 自動更新
 # ==============================================================================
-st.markdown("### 📊 今日大盤速覽")
-
-_ov_col1, _ov_col2, _ov_col3, _ov_col4, _ov_col5, _ov_col6 = st.columns(6)
-
-# 當前 BTC 價格 (與前一日收盤比較)
-_prev_close = btc['close'].iloc[-2] if len(btc) > 1 else current_price
-_price_chg  = (current_price - _prev_close) / _prev_close * 100
-_ov_col1.metric(
-    "💰 BTC 當前價格",
-    f"${current_price:,.0f}",
-    f"{_price_chg:+.2f}%",
-    delta_color="normal" if _price_chg >= 0 else "inverse",
-)
-
-# 恐懼貪婪指數
-_fng_color = "normal" if fng_val >= 50 else "inverse"
-_ov_col2.metric(
-    "😱 恐懼貪婪指數",
-    f"{fng_val:.0f}/100",
-    fng_state,
-    delta_color=_fng_color,
-    help=f"數據來源: {fng_source}",
-)
-
-# 資金費率
-_fr_delta = "🔥 多頭過熱" if funding_rate > 0.03 else ("🟢 中性" if funding_rate > 0 else "❄️ 空頭")
-_ov_col3.metric(
-    "💸 資金費率",
-    f"{funding_rate:.4f}%",
-    _fr_delta,
-    delta_color="inverse" if funding_rate > 0.03 else "normal",
-)
-
-# TVL
-_tvl_display = f"${tvl_val/1e9:.2f}B" if tvl_val > 1e9 else f"${tvl_val:.2f}M"
-_ov_col4.metric(
-    "🏦 BTC 生態 TVL",
-    _tvl_display,
-    "↑ 鏈上活躍" if tvl_val > 0 else "—",
-)
-
-# AHR999
-_ahr_now = curr.get('AHR999', float('nan'))
-if _ahr_now == _ahr_now:  # not nan
-    _ahr_state = "🟢 抄底區" if _ahr_now < 0.45 else ("🟡 合理區" if _ahr_now < 1.2 else "🔴 高估區")
-    _ov_col5.metric("📐 AHR999", f"{_ahr_now:.3f}", _ahr_state)
-else:
-    _ov_col5.metric("📐 AHR999", "—", "計算中")
-
-# 穩定幣市值
-_stab_mcap = realtime_data.get('stablecoin_mcap')
-if _stab_mcap and _stab_mcap > 0:
-    _ov_col6.metric(
-        "💵 穩定幣市值",
-        f"${_stab_mcap:.1f}B",
-        "↑ 流動性充沛" if _stab_mcap > 100 else "流動性一般",
-    )
-else:
-    _ov_col6.metric("💵 穩定幣市值", "—", "連線中")
-
-st.markdown("---")
+render_realtime_overview(btc, curr)
 
 # ==============================================================================
 # 5. Tabs
