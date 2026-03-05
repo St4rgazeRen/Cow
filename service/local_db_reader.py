@@ -15,7 +15,7 @@ commit push 到 GitHub，Streamlit Cloud 直接讀取（免 API 呼叫）。
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
@@ -71,7 +71,7 @@ def _read_single_year(year: int, start_ms: int = None, end_ms: int = None) -> pd
     if df.empty:
         return df
 
-    df["date"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.tz_localize(None)
+    df["date"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.tz_convert(None)
     df.set_index("date", inplace=True)
     return df[["open", "high", "low", "close", "volume"]]
 
@@ -100,8 +100,10 @@ def read_btc_15m(start_date: str = "2017-01-01", end_date: str = None) -> pd.Dat
     if not years:
         return pd.DataFrame()
 
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt   = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.utcnow()
+    # UTC-aware timestamps prevent 8-hour offset bug when running in UTC+8 (Taiwan)
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end_dt   = (datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if end_date else datetime.now(timezone.utc))
 
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms   = int(end_dt.timestamp() * 1000)

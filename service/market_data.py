@@ -14,7 +14,7 @@ import time
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import urllib3
 
@@ -57,8 +57,8 @@ def fetch_binance_daily(start_date_str):
     - limit 最大 1000，分頁以 startTime 推進
     - 注意：Binance 對部分 Streamlit Cloud 或 GitHub Actions IP 返回 451（地理封鎖）
     """
-    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp() * 1000)
-    now_ts   = int(datetime.now().timestamp() * 1000)
+    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    now_ts   = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     all_klines = []
     since = start_ts
@@ -122,7 +122,7 @@ def fetch_kraken_daily(start_date_str):
     第三備援：從 Kraken 公開 API 抓取 BTC/USD 日線數據。
     Kraken 無地理封鎖限制，適合從 Streamlit Cloud / GitHub Actions 呼叫。
     """
-    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
+    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     url = "https://api.kraken.com/0/public/OHLC"
     all_candles = []
     since = start_ts
@@ -183,8 +183,8 @@ def fetch_cryptocompare_daily(start_date_str):
     - 分頁倒序抓取（toTs 往前推）
     """
     url = "https://min-api.cryptocompare.com/data/v2/histoday"
-    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").timestamp())
-    now_ts = int(datetime.now().timestamp())
+    start_ts = int(datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    now_ts = int(datetime.now(timezone.utc).timestamp())
 
     all_rows = []
     to_ts = now_ts  # 從當前時間往前翻頁
@@ -259,7 +259,7 @@ def fetch_market_data():
     獲取 BTC-USD 日線數據（本地 CSV 增量更新）
     返回: (btc_df, dxy_df)
     """
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()
     # 實例化帶有 SSL 繞過與偽裝的 Session
     session = get_yf_session()
 
