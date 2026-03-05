@@ -10,7 +10,6 @@ data_manager.py
 import pandas as pd
 import requests
 import urllib3          # [Task #1] SSL 警告靜默
-import ccxt
 import os
 import time             # [Task #3] 指數退避 sleep
 import sqlite3          # [Task #4] SQLite 資料庫連線
@@ -258,6 +257,13 @@ def update_funding_history(symbol: str = 'BTC/USDT', limit: int = 1000) -> pd.Da
     # [Task #8] 從環境變數讀取 API Key（若未設定則使用公開 API，不影響資金費率查詢）
     api_key    = os.getenv("BINANCE_API_KEY", "")
     api_secret = os.getenv("BINANCE_API_SECRET", "")
+
+    try:
+        import ccxt  # 延遲導入，避免 Python 3.13 相容性問題造成整個模組載入失敗
+    except ImportError as e:
+        print(f"[Funding] ccxt 導入失敗（Python 版本相容問題）: {e}，使用 SQLite 緩存")
+        return existing_df
+
     exchange_cfg = {'options': {'defaultType': 'future'}}
     if api_key and api_secret:
         exchange_cfg['apiKey']  = api_key
