@@ -24,6 +24,7 @@ import math
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any
+from strategy.swing import calculate_max_drawdown
 
 logger = logging.getLogger('Cow.walkforward')
 
@@ -39,16 +40,6 @@ class WalkForwardBacktester:
         self.annual_days = 365
         self.risk_free   = 0.02
         logger.info('WalkForwardBacktester 初始化')
-
-    @staticmethod
-    def max_drawdown(returns: pd.Series) -> float:
-        """計算最大回撤 (%)"""
-        if returns.empty or len(returns) < 1:
-            return 0.0
-        cum = (1 + returns).cumprod()
-        peak = cum.cummax()
-        drawdown = (cum - peak) / peak
-        return float(drawdown.min()) * 100
 
     def sharpe_ratio(self, returns: pd.Series) -> float:
         """計算年化夏普比率"""
@@ -108,7 +99,7 @@ class WalkForwardBacktester:
         dates = bt_df.index
 
         # EMA20 乖離
-        ema20 = bt_df['EMA_20'].fillna(method='ffill').values
+        ema20 = bt_df['EMA_20'].ffill().values
         dist_pct = np.where(ema20 > 0, (close / ema20 - 1) * 100, np.nan)
 
         # ATR（供停損/目標 + Chandelier 用）
@@ -131,7 +122,7 @@ class WalkForwardBacktester:
         # 防守線（出場用）
         if exit_ma not in bt_df.columns:
             exit_ma = 'EMA_20'
-        defend_line = bt_df[exit_ma].fillna(method='ffill').values
+        defend_line = bt_df[exit_ma].ffill().values
 
         # Step 3：向量化計算進場訊號
         open_vals = bt_df['open'].values
@@ -359,7 +350,8 @@ class WalkForwardBacktester:
         if all_rets:
             combined = pd.concat(all_rets)
             sharpe = self.sharpe_ratio(combined)
-            mdd = self.max_drawdown(combined)
+            cum_ret = (1 + combined).cumprod().values
+            mdd = calculate_max_drawdown(cum_ret)
 
         # 勝率
         win_trades = [t for t in trades if t['pnl'] > 0]
