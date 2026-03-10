@@ -679,13 +679,14 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
 
             st.markdown("---")
             st.markdown("**出場策略模式**")
+            _exit_mode_keys = list(WALK_FORWARD_EXIT_MODES.keys())
             wf_exit_mode = st.radio(
                 "選擇出場機制",
-                options=list(WALK_FORWARD_EXIT_MODES.keys()),
+                options=_exit_mode_keys,
                 format_func=lambda x: WALK_FORWARD_EXIT_MODES.get(x, x),
                 horizontal=True,
                 key="wf_exit_mode",
-                index=list(WALK_FORWARD_EXIT_MODES.keys()).index(DEFAULT_WALK_FORWARD_EXIT_MODE),
+                index=_exit_mode_keys.index(DEFAULT_WALK_FORWARD_EXIT_MODE),
             )
             st.caption(
                 "💡 簡化模式適合長期持倉，進階模式包含極端出貨、ATR目標、時間停損等多層保護。"

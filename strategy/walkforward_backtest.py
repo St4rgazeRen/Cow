@@ -90,11 +90,16 @@ class WalkForwardBacktester:
         :param min_hold_days:         最少持倉天數（預設 3）
         :return:                      回測結果字典（含 trades 明細）
         """
-        # 驗證 exit_mode 參數
+        # 驗證參數
         if exit_mode not in WALK_FORWARD_EXIT_MODES:
             raise ValueError(
                 f"exit_mode 必須為 {list(WALK_FORWARD_EXIT_MODES.keys())}，"
                 f"不支援 {exit_mode!r}"
+            )
+        if entry_dist_max_pct is not None and entry_dist_max_pct < entry_dist_min_pct:
+            raise ValueError(
+                f"entry_dist_max_pct ({entry_dist_max_pct}) 不得小於 "
+                f"entry_dist_min_pct ({entry_dist_min_pct})"
             )
 
         # Step 1：篩選日期區間
@@ -162,6 +167,9 @@ class WalkForwardBacktester:
         is_exit_arr = close < defend_line
         exit_signal_shifted = np.concatenate([[False], is_exit_arr[:-1]])  # shift(1)
 
+        # 迴圈前預解析，避免每日重複字串比對
+        use_simple_mode = (exit_mode == "simple")
+
         # Step 4：時間迴圈
         trades: List[Dict[str, Any]] = []
         capital = initial_capital
@@ -196,7 +204,7 @@ class WalkForwardBacktester:
 
                 # 簡化模式：與 swing.py 完全對齊
                 # exit_signal_shifted[i] = 昨日收盤 < 防守線 → 今日開盤出場
-                if exit_mode == "simple":
+                if use_simple_mode:
                     if exit_signal_shifted[i]:
                         do_exit = True
                         exit_reason = f'跌破{exit_ma} {defend_line[i-1]:.2f}'
@@ -271,7 +279,7 @@ class WalkForwardBacktester:
                     # 計算損益（含摩擦成本）
                     # 簡化模式：出場均為 pending 次日 → 以今日開盤執行（對齊 swing.py）
                     # 進階模式：ATR 停損/目標為即時觸發 → 以今日收盤執行
-                    exec_exit = open_vals[i] if exit_mode == "simple" else cur_price
+                    exec_exit = open_vals[i] if use_simple_mode else cur_price
                     friction_out = self.FEE_RATE + self.SLIPPAGE_RATE
                     exit_price_net = exec_exit * (1.0 - friction_out)
                     balance = position * exit_price_net
@@ -331,7 +339,7 @@ class WalkForwardBacktester:
                         trade_target = None
 
         # 若持倉至結尾
-        if in_trade and len(trades) >= 0:
+        if in_trade:
             last_close = close[-1]
             last_date = dates[-1]
             friction_out = self.FEE_RATE + self.SLIPPAGE_RATE
