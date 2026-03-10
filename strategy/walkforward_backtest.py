@@ -57,10 +57,11 @@ class WalkForwardBacktester:
         start_date: str,
         end_date: str,
         initial_capital: float = 10_000,
-        scan_freq: int = 5,
+        scan_freq: int = 1,
         exit_ma: str = "SMA_50",
         # 進場參數
         entry_dist_min_pct: float = 0.0,
+        entry_dist_max_pct: Optional[float] = None,  # None = 無上限（與 swing.py 一致）
         rsi_min: int = 50,
         adx_min: int = 20,
         # 出場參數
@@ -77,9 +78,10 @@ class WalkForwardBacktester:
         :param start_date:            回測起始日期（YYYY-MM-DD）
         :param end_date:              回測截止日期（YYYY-MM-DD）
         :param initial_capital:       初始資金（USDT）
-        :param scan_freq:             進場掃描頻率（交易日數）
+        :param scan_freq:             進場掃描頻率（交易日數，簡化模式固定=1）
         :param exit_ma:               出場防守線（SMA_50 / EMA_20 / SMA_200）
         :param entry_dist_min_pct:    EMA20 最小乖離 (%)
+        :param entry_dist_max_pct:    EMA20 最大乖離 (%)，None = 無上限
         :param rsi_min:               RSI 最小值（預設 50）
         :param adx_min:               ADX 最小值（預設 20）
         :param atr_period:            ATR 週期（預設 14）
@@ -134,14 +136,17 @@ class WalkForwardBacktester:
         defend_line = bt_df[exit_ma].ffill().values
 
         # Step 3：向量化計算進場訊號
+        # 注意：所有條件用「當日」值計算，最後統一 shift(1) 一次（防先視偏誤）
+        # 不在這裡 pre-shift，否則加上後面的 shift(1) 會變成雙重移位（看到 2 天前的資料）
         open_vals = bt_df['open'].values
-        close_shifted = np.concatenate([[np.nan], close[:-1]])  # 防先視：前一日收盤
-        ema20_shifted = np.concatenate([[np.nan], ema20[:-1]])
 
-        bull_trend = (close_shifted > bt_df['SMA_200'].fillna(0).values) & \
+        bull_trend = (close > bt_df['SMA_200'].fillna(0).values) & \
                      (bt_df['RSI_14'].fillna(0).values > rsi_min)
 
-        dist_ok = (dist_pct >= entry_dist_min_pct) & (dist_pct <= 1.5)
+        if entry_dist_max_pct is not None:
+            dist_ok = (dist_pct >= entry_dist_min_pct) & (dist_pct <= entry_dist_max_pct)
+        else:
+            dist_ok = dist_pct >= entry_dist_min_pct
 
         macd_ok = ((bt_df.get('MACD_12_26_9', 0).fillna(0).values >
                     bt_df.get('MACDs_12_26_9', 0).fillna(0).values)

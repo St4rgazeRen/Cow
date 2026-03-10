@@ -656,6 +656,13 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                 min_value=0.0, max_value=2.0, value=0.0, step=0.1,
                 help="0 = 只要站上 EMA20 即符合", key="wf_dist",
             )
+            _wf_dist_max_raw = st.slider(
+                "EMA20 最大乖離 (%) ── 0 = 不限",
+                min_value=0.0, max_value=20.0, value=0.0, step=0.5,
+                help="0 = 不設上限（等同 swing.py 行為）；設值後只在乖離 ≤ 此值時才進場",
+                key="wf_dist_max",
+            )
+            wf_dist_max = None if _wf_dist_max_raw == 0.0 else _wf_dist_max_raw
             wf_rsi = st.slider(
                 "RSI 動能閾值",
                 min_value=40, max_value=65, value=50, step=1, key="wf_rsi",
@@ -695,11 +702,15 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                 min_value=1.0, max_value=5.0, value=3.0, step=0.25, key="wf_atr_tp",
                 help="目標線 = 進場價 + ATR×倍數",
             )
-            wf_scan = st.slider(
-                "進場掃描頻率 (日)",
-                min_value=1, max_value=10, value=5, step=1, key="wf_scan",
-                help="每 N 日掃描一次進場訊號（降低計算負擔）",
-            )
+            if wf_exit_mode == "simple":
+                wf_scan = 1
+                st.caption("💡 簡化模式固定每日掃描（scan_freq=1）")
+            else:
+                wf_scan = st.slider(
+                    "進場掃描頻率 (日)",
+                    min_value=1, max_value=10, value=5, step=1, key="wf_scan",
+                    help="每 N 日掃描一次進場訊號（進階模式可調整）",
+                )
 
             wf_run = st.button("🚀 執行 Walk-Forward 回測", type="primary", key="wf_run")
 
@@ -718,6 +729,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             scan_freq=wf_scan,
                             exit_ma=wf_exit_ma,
                             entry_dist_min_pct=wf_dist,
+                            entry_dist_max_pct=wf_dist_max,
                             rsi_min=wf_rsi,
                             adx_min=wf_adx,
                             exit_mode=wf_exit_mode,
@@ -810,7 +822,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             **進場條件（五合一）**：
                             1. 價格 > SMA200（年線多頭）
                             2. RSI14 > {wf_rsi}（動能）
-                            3. {wf_dist:.1f}% ≤ EMA20 乖離 ≤ 1.5%（甜蜜點）
+                            3. EMA20 乖離 ≥ {wf_dist:.1f}%{"（無上限）" if wf_dist_max is None else f"且 ≤ {wf_dist_max:.1f}%"}（甜蜜點）
                             4. MACD > Signal（多頭交叉）
                             5. ADX > {wf_adx}（趨勢強度）
 
