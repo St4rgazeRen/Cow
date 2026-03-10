@@ -63,6 +63,7 @@ class WalkForwardBacktester:
         rsi_min: int = 50,
         adx_min: int = 20,
         # 出場參數
+        exit_mode: str = "simple",       # 'simple' (只用EMA) 或 'multi' (六層機制)
         atr_period: int = 14,
         atr_sl_multiplier: float = 2.0,   # 停損倍數
         atr_tp_multiplier: float = 3.0,   # 目標價倍數
@@ -172,74 +173,81 @@ class WalkForwardBacktester:
                 highest_high = max(highest_high, cur_high)
                 hold_days = day_num - entry_idx
 
-                # ── 出場判斷（多層次） ──
+                # ── 出場判斷 ──
                 do_exit = False
                 exit_reason = ""
 
-                # ① Climax Exit（隔日執行）
-                if climax_pending:
-                    do_exit = True
-                    exit_reason = _pending_climax_reason
-                    climax_pending = False
-                else:
-                    climax_today = False
-
-                    # 正乖離 > 30%
-                    if not math.isnan(ma20[i]) and ma20[i] > 0:
-                        if cur_price > ma20[i] * 1.3:
-                            climax_today = True
-                            _pending_climax_reason = (
-                                f'極端出貨：正乖離MA20達'
-                                f'{(cur_price/ma20[i]-1)*100:.1f}%（Climax Exit，隔日強制）'
-                            )
-
-                    # 爆量 + 長上影線
-                    if not climax_today and not math.isnan(vol_ma20[i]) and vol_ma20[i] > 0:
-                        if volume[i] > 5 * vol_ma20[i]:
-                            open_val = open_vals[i]
-                            body = abs(cur_price - open_val)
-                            upper_shadow = cur_high - max(cur_price, open_val)
-                            if upper_shadow > body * 0.5 or cur_price < open_val:
-                                climax_today = True
-                                _pending_climax_reason = (
-                                    f'極端出貨：爆量{volume[i]/vol_ma20[i]:.1f}倍+'
-                                    f'{"長上影線" if upper_shadow>body*0.5 else "收黑"}（Climax Exit）'
-                                )
-
-                    if climax_today:
-                        climax_pending = True
-
-                    # ② ATR 停損
-                    if trade_stop_loss is not None and cur_price <= trade_stop_loss:
-                        do_exit = True
-                        exit_reason = f'ATR停損 {trade_stop_loss:.2f}'
-
-                    # ③ ATR 目標
-                    elif trade_target is not None and cur_price >= trade_target:
-                        upside = (trade_target / entry_price - 1) * 100
-                        do_exit = True
-                        exit_reason = f'ATR目標 {trade_target:.2f}（+{upside:.1f}%）'
-
-                    # ④ Chandelier Exit
-                    elif hold_days >= min_hold_days and atr_series[i] > 0:
-                        chandelier_stop = highest_high - 2.0 * atr_series[i]
-                        if cur_price < chandelier_stop:
-                            do_exit = True
-                            exit_reason = f'Chandelier止利 {chandelier_stop:.2f}'
-
-                    # ⑤ Time Stop（15日 + 報酬 < 5%）
-                    elif hold_days >= 15:
-                        gross_ret = (cur_price / entry_price - 1) * 100
-                        friction = (self.FEE_RATE + self.SLIPPAGE_RATE) * 2 * 100  # 往返
-                        net_ret = gross_ret - friction
-                        if net_ret < 5.0:
-                            do_exit = True
-                            exit_reason = f'時間停損：持倉{hold_days}日，報酬{net_ret:.1f}%'
-
-                    # ⑥ EMA 停損
-                    elif hold_days >= min_hold_days and cur_price < defend_line[i]:
+                # 簡化模式：只用 EMA 防守線
+                if exit_mode == "simple":
+                    if hold_days >= min_hold_days and cur_price < defend_line[i]:
                         do_exit = True
                         exit_reason = f'跌破{exit_ma} {defend_line[i]:.2f}'
+                else:
+                    # 多層機制：六層出場條件
+                    # ① Climax Exit（隔日執行）
+                    if climax_pending:
+                        do_exit = True
+                        exit_reason = _pending_climax_reason
+                        climax_pending = False
+                    else:
+                        climax_today = False
+
+                        # 正乖離 > 30%
+                        if not math.isnan(ma20[i]) and ma20[i] > 0:
+                            if cur_price > ma20[i] * 1.3:
+                                climax_today = True
+                                _pending_climax_reason = (
+                                    f'極端出貨：正乖離MA20達'
+                                    f'{(cur_price/ma20[i]-1)*100:.1f}%（Climax Exit，隔日強制）'
+                                )
+
+                        # 爆量 + 長上影線
+                        if not climax_today and not math.isnan(vol_ma20[i]) and vol_ma20[i] > 0:
+                            if volume[i] > 5 * vol_ma20[i]:
+                                open_val = open_vals[i]
+                                body = abs(cur_price - open_val)
+                                upper_shadow = cur_high - max(cur_price, open_val)
+                                if upper_shadow > body * 0.5 or cur_price < open_val:
+                                    climax_today = True
+                                    _pending_climax_reason = (
+                                        f'極端出貨：爆量{volume[i]/vol_ma20[i]:.1f}倍+'
+                                        f'{"長上影線" if upper_shadow>body*0.5 else "收黑"}（Climax Exit）'
+                                    )
+
+                        if climax_today:
+                            climax_pending = True
+
+                        # ② ATR 停損
+                        if trade_stop_loss is not None and cur_price <= trade_stop_loss:
+                            do_exit = True
+                            exit_reason = f'ATR停損 {trade_stop_loss:.2f}'
+
+                        # ③ ATR 目標
+                        elif trade_target is not None and cur_price >= trade_target:
+                            upside = (trade_target / entry_price - 1) * 100
+                            do_exit = True
+                            exit_reason = f'ATR目標 {trade_target:.2f}（+{upside:.1f}%）'
+
+                        # ④ Chandelier Exit
+                        elif hold_days >= min_hold_days and atr_series[i] > 0:
+                            chandelier_stop = highest_high - 2.0 * atr_series[i]
+                            if cur_price < chandelier_stop:
+                                do_exit = True
+                                exit_reason = f'Chandelier止利 {chandelier_stop:.2f}'
+
+                        # ⑤ Time Stop（15日 + 報酬 < 5%）
+                        elif hold_days >= 15:
+                            gross_ret = (cur_price / entry_price - 1) * 100
+                            friction = (self.FEE_RATE + self.SLIPPAGE_RATE) * 2 * 100  # 往返
+                            net_ret = gross_ret - friction
+                            if net_ret < 5.0:
+                                do_exit = True
+                                exit_reason = f'時間停損：持倉{hold_days}日，報酬{net_ret:.1f}%'
+
+                        # ⑥ EMA 停損
+                        elif hold_days >= min_hold_days and cur_price < defend_line[i]:
+                            do_exit = True
+                            exit_reason = f'跌破{exit_ma} {defend_line[i]:.2f}'
 
                 if do_exit:
                     # 計算損益（含摩擦成本）

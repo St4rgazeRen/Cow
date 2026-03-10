@@ -670,6 +670,19 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                 index=0, key="wf_exit_ma",
             )
 
+            st.markdown("---")
+            st.markdown("**出場策略模式**")
+            wf_exit_mode = st.radio(
+                "選擇出場機制",
+                options=["simple", "multi"],
+                format_func=lambda x: "簡化模式：只看防守線跌破" if x == "simple" else "進階模式：6層多重機制（Climax/ATR/Chandelier/EMA等）",
+                horizontal=True,
+                key="wf_exit_mode",
+            )
+            st.caption(
+                "💡 簡化模式適合長期持倉，進階模式包含極端出貨、ATR目標、時間停損等多層保護。"
+            )
+
             st.markdown("**出場參數**")
             wf_atr_sl = st.slider(
                 "ATR 停損倍數",
@@ -706,6 +719,7 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
                             entry_dist_min_pct=wf_dist,
                             rsi_min=wf_rsi,
                             adx_min=wf_adx,
+                            exit_mode=wf_exit_mode,
                             atr_sl_multiplier=wf_atr_sl,
                             atr_tp_multiplier=wf_atr_tp,
                         )
