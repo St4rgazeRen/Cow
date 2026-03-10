@@ -158,6 +158,10 @@ class WalkForwardBacktester:
         entry_signal = bull_trend & dist_ok & macd_ok & adx_ok
         entry_signal_shifted = np.concatenate([[False], entry_signal[:-1]])  # shift(1)
 
+        # 簡化模式出場訊號：對齊 swing.py — 以「昨日收盤 < 防守線」觸發，今日開盤執行
+        is_exit_arr = close < defend_line
+        exit_signal_shifted = np.concatenate([[False], is_exit_arr[:-1]])  # shift(1)
+
         # Step 4：時間迴圈
         trades: List[Dict[str, Any]] = []
         capital = initial_capital
@@ -190,11 +194,12 @@ class WalkForwardBacktester:
                 do_exit = False
                 exit_reason = ""
 
-                # 簡化模式：只用 EMA 防守線
+                # 簡化模式：與 swing.py 完全對齊
+                # exit_signal_shifted[i] = 昨日收盤 < 防守線 → 今日開盤出場
                 if exit_mode == "simple":
-                    if hold_days >= min_hold_days and cur_price < defend_line[i]:
+                    if exit_signal_shifted[i]:
                         do_exit = True
-                        exit_reason = f'跌破{exit_ma} {defend_line[i]:.2f}'
+                        exit_reason = f'跌破{exit_ma} {defend_line[i-1]:.2f}'
                 else:
                     # 多層機制：六層出場條件
                     # ① Climax Exit（隔日執行）
@@ -264,8 +269,11 @@ class WalkForwardBacktester:
 
                 if do_exit:
                     # 計算損益（含摩擦成本）
+                    # 簡化模式：出場均為 pending 次日 → 以今日開盤執行（對齊 swing.py）
+                    # 進階模式：ATR 停損/目標為即時觸發 → 以今日收盤執行
+                    exec_exit = open_vals[i] if exit_mode == "simple" else cur_price
                     friction_out = self.FEE_RATE + self.SLIPPAGE_RATE
-                    exit_price_net = cur_price * (1.0 - friction_out)
+                    exit_price_net = exec_exit * (1.0 - friction_out)
                     balance = position * exit_price_net
                     pnl = balance - capital
                     pnl_pct = (exit_price_net / entry_price - 1) * 100
@@ -274,7 +282,7 @@ class WalkForwardBacktester:
                         'entry_date': dates[entry_idx].strftime('%Y-%m-%d'),
                         'exit_date': date_str,
                         'entry_price': entry_price,
-                        'exit_price': cur_price,
+                        'exit_price': exec_exit,
                         'hold_days': hold_days,
                         'entry_reason': entry_reason,
                         'exit_reason': exit_reason,
@@ -298,9 +306,9 @@ class WalkForwardBacktester:
             else:
                 # ── 進場掃描（每 scan_freq 天）──
                 if day_num % scan_freq == 0 and entry_signal_shifted[i]:
-                    # 計算進場成本
+                    # 進場執行：次日開盤（訊號昨日收盤確認，今日開盤下單，對齊 swing.py）
                     friction_in = self.FEE_RATE + self.SLIPPAGE_RATE
-                    entry_price_net = cur_price * (1.0 + friction_in)
+                    entry_price_net = open_vals[i] * (1.0 + friction_in)
                     position = capital / entry_price_net
 
                     if position <= 0:
@@ -310,7 +318,7 @@ class WalkForwardBacktester:
                     in_trade = True
                     entry_idx = day_num
                     entry_reason = f'Antigravity 5合1 ({exit_ma}防守)'
-                    highest_high = cur_price
+                    highest_high = open_vals[i]
                     climax_pending = False
 
                     # 計算 ATR 動態停損/目標
