@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Any
 from strategy.swing import calculate_max_drawdown
+from config import WALK_FORWARD_EXIT_MODES
 
 logger = logging.getLogger('Cow.walkforward')
 
@@ -87,6 +88,13 @@ class WalkForwardBacktester:
         :param min_hold_days:         最少持倉天數（預設 3）
         :return:                      回測結果字典（含 trades 明細）
         """
+        # 驗證 exit_mode 參數
+        if exit_mode not in WALK_FORWARD_EXIT_MODES:
+            raise ValueError(
+                f"exit_mode 必須為 {list(WALK_FORWARD_EXIT_MODES.keys())}，"
+                f"不支援 {exit_mode!r}"
+            )
+
         # Step 1：篩選日期區間
         mask = (df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))
         bt_df = df.loc[mask].copy()

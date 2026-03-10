@@ -29,7 +29,7 @@ from strategy.swing import run_swing_strategy_backtest, run_multitf_backtest
 from strategy.dual_invest import run_dual_investment_backtest
 from strategy.walkforward_backtest import WalkForwardBacktester
 from service.local_db_reader import read_btc_15m, has_local_data
-from config import DEFAULT_INITIAL_CAPITAL
+from config import DEFAULT_INITIAL_CAPITAL, WALK_FORWARD_EXIT_MODES, DEFAULT_WALK_FORWARD_EXIT_MODE
 
 
 def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
@@ -674,10 +674,11 @@ def render(btc, call_risk=None, put_risk=None, ahr_threshold=None):
             st.markdown("**出場策略模式**")
             wf_exit_mode = st.radio(
                 "選擇出場機制",
-                options=["simple", "multi"],
-                format_func=lambda x: "簡化模式：只看防守線跌破" if x == "simple" else "進階模式：6層多重機制（Climax/ATR/Chandelier/EMA等）",
+                options=list(WALK_FORWARD_EXIT_MODES.keys()),
+                format_func=lambda x: WALK_FORWARD_EXIT_MODES.get(x, x),
                 horizontal=True,
                 key="wf_exit_mode",
+                index=list(WALK_FORWARD_EXIT_MODES.keys()).index(DEFAULT_WALK_FORWARD_EXIT_MODE),
             )
             st.caption(
                 "💡 簡化模式適合長期持倉，進階模式包含極端出貨、ATR目標、時間停損等多層保護。"
