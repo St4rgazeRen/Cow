@@ -1,4 +1,4 @@
-# Cow — 比特幣投資戰情室
+# Cow — 比特幣投資戰情室 v3.2
 
 > 比特幣多週期量化分析工具，整合技術指標、鏈上數據、期權與波段策略。
 
@@ -22,27 +22,32 @@
 
 ```text
 app.py              入口點（組合各層，不含業務邏輯；今日大盤速覽 6 大 Metric 以 @st.fragment(run_every=60) 每 60 秒自動更新）
-config.py           集中設定（均線週期、交易成本、倉位風控參數）
+config.py           集中設定（均線週期、交易成本、倉位風控參數、WALK_FORWARD_EXIT_MODES）
+data_manager.py     根層級數據管理器（TVL/穩定幣/資金費率歷史 SQLite 快取、指數退避重試、增量模式）
 
 collector/
-  btc_price_collector.py  本地端 15m K 線收集器（Binance + Kraken 雙源）
+  btc_price_collector.py  本地端 15m K 線收集器（Binance + Kraken 雙源，年度 SQLite 分割，支援 --push）
 
-db/                 年度分割 SQLite 資料庫（本地收集後 push 至雲端）
+db/                 年度分割 SQLite 資料庫（本地收集後 push 至雲端，Streamlit 直接讀 repo 內 db）
   btcusdt_15m_2013.db
   ...
   btcusdt_15m_2026.db
 
 core/
   indicators.py       技術指標 + AHR999 計算（純函數，無 Streamlit 依賴）
-  bear_bottom.py      熊市底部 8 大指標評分引擎 + -100~+100 牛熊複合評分
-  season_forecast.py  四季理論目標價預測引擎（減半週期判斷、歷史倍數遞減模型）
+                      AHR999 使用 Giovanni Santostasi 冪律：10^(-17.01467 + 5.84×log10(days))
+  bear_bottom.py      熊市底部 8 大指標評分引擎 + -100~+100 牛熊複合評分（含 breakdown 分解）
+  season_forecast.py  四季理論目標價預測引擎（減半週期判斷、歷史倍數遞減模型、冪律走廊）
 
 service/
   local_db_reader.py  讀取本地 SQLite（15m 原始 / 重採樣日線），TTL 快取，全面 UTC 時區
-  market_data.py      BTC / DXY 歷史數據（五層備援：本地DB→Yahoo→Binance→Kraken→CryptoCompare）+ T 日數據縫合，全面 UTC 時區（修正 UTC+8 偏移 8 小時 bug）
-  onchain.py          鏈上輔助數據（非同步 httpx 分頁，TVL/穩定幣/資金費率）
-  realtime.py         即時報價（Binance→Kraken→本地DB 三層備援；含資金費率/OI，Header 偽裝與 SSL 繞過；各欄位追蹤 price_source / funding_rate_source / tvl_source）
-  macro_data.py       宏觀數據（FRED M2/CPI、Yahoo 日圓、量子威脅評估）
+  market_data.py      BTC / DXY 歷史數據（五層備援：本地DB→Yahoo→Binance→Kraken→CryptoCompare）
+                      + T 日數據縫合，全面 UTC 時區（修正 UTC+8 偏移 8 小時 bug）
+  onchain.py          鏈上輔助數據（非同步 httpx 並行，TVL/穩定幣/資金費率歷史）
+  realtime.py         即時報價（Binance→Kraken→本地DB 三層備援）
+                      含資金費率/OI（Binance→Bybit→OKX 三層），Header 偽裝與 SSL 繞過
+                      各欄位追蹤 price_source / funding_rate_source / tvl_source
+  macro_data.py       宏觀數據（FRED M2/CPI、Yahoo 日圓、量子威脅）+ 全面靜態備援 _FALLBACK 字典 (v1.1)
   mock.py             代理指標與模擬數據（API 失敗降級備援）
 
 strategy/
@@ -52,15 +57,21 @@ strategy/
   notifier.py           LINE Bot 主動推播通知模組
 
 scripts/
-  daily_line_notify.py   GitHub Actions 雲端自動推播腳本（內建 Kraken 備援）
-  test_flex_message.py   本地端測試 LINE Flex Message 排版的除錯腳本
+  daily_line_notify.py     GitHub Actions 雲端自動推播腳本（Kraken 備援，09:23 / 15:39 台灣時間）
+  test_flex_message.py     本地端測試 LINE Flex Message 排版的除錯腳本
+  test_compare_backtest.py 驗證腳本：對相同參數同時執行 swing.py 與 Walk-Forward，確認結果量級一致
 
 handler/
-  layout.py          頁面設置、側欄（精簡化：只保留日期區間，策略參數移至各 Tab）
+  layout.py          頁面設置、側欄（只保留日期區間，策略參數移至各 Tab）
   tab_macro_compass.py Tab 1：長週期羅盤（雙 Gauge + 評分公式 expander + 三層框架 + 底部 8 指標 + 四季預測）
   tab_swing.py       Tab 2：波段狙擊（3 行式 K 線子圖、2x3 條件儀表板、動態建議、倉位計算）
   tab_dual_invest.py Tab 3：雙幣理財（行權價梯形視覺化）
   tab_backtest.py    Tab 4：時光機回測（5 個子 Tab：波段 PnL、雙幣滾倉、牛市雷達、多週期回測、Walk-Forward 無先視）
+
+tests/
+  test_bear_bottom.py   熊市底部指標單元測試
+  test_dual_invest.py   雙幣期權策略單元測試
+  test_market_data.py   數據來源與備援鏈單元測試
 ```
 
 ---

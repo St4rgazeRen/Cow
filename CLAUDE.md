@@ -1,6 +1,7 @@
 # CLAUDE.md — Cow（BTC 投資戰情室）
 
 **路徑：** `D:\Users\63191\Documents\GitHub\Cow`
+**目前版本：** v3.2
 **Live App：** https://mfyyo9qf5mymsrouxkfdgj.streamlit.app
 **Streamlit 版本：** 1.37.1
 
@@ -21,16 +22,22 @@ D:\Users\63191\AppData\Local\anaconda3\python.exe collector/btc_price_collector.
 ## 架構分層
 
 ```
-app.py          入口點（不含業務邏輯）
-config.py       集中設定（均線週期、交易成本、倉位風控、SSL_VERIFY）
-core/           純函數層（技術指標、熊市底部評分、四季目標價預測）
-service/        資料取得層（歷史：本地DB→Yahoo→Binance→Kraken→CryptoCompare
-                           即時：Binance→Kraken→本地DB）
-strategy/       策略引擎（波段 Antigravity v4.1、雙幣期權 Black-Scholes、LINE 推播）
-handler/        Streamlit UI 各 Tab 實作
-collector/      BTC 15m K 線收集器（年度分割 SQLite）
-scripts/        GitHub Actions 推播腳本（09:23 / 15:39 台灣時間）
-db/             btcusdt_15m_YYYY.db（年度分割，雲端直接讀 repo 內 db）
+app.py           入口點（不含業務邏輯；今日大盤速覽以 @st.fragment(run_every=60) 自動更新）
+config.py        集中設定（均線週期、交易成本、倉位風控、SSL_VERIFY、WALK_FORWARD_EXIT_MODES）
+data_manager.py  根層級數據管理器（TVL/穩定幣/資金費率歷史 SQLite 快取、指數退避重試）
+
+core/            純函數層（技術指標、熊市底部評分、四季目標價預測）
+service/         資料取得層
+                 歷史：本地DB → Yahoo → Binance → Kraken → CryptoCompare（五層）
+                 即時：Binance → Kraken → 本地DB（三層）
+                 資金費率：Binance fapi → Bybit → OKX（三層）
+                 宏觀：FRED CSV → Yahoo → FRED 備援 → 靜態 _FALLBACK（四層）
+strategy/        策略引擎（波段 Antigravity v4.1、Walk-Forward 回測、雙幣 Black-Scholes、推播）
+handler/         Streamlit UI 各 Tab 實作
+collector/       BTC 15m K 線收集器（年度分割 SQLite，Binance + Kraken 雙源）
+scripts/         GitHub Actions 推播腳本 + Flex Message 除錯工具 + 回測驗證腳本
+tests/           單元測試（bear_bottom、dual_invest、market_data）
+db/              btcusdt_15m_YYYY.db（年度分割，雲端直接讀 repo 內 db）
 ```
 
 ---
@@ -117,3 +124,37 @@ fund_sub.loc[fund_sub.index < fund_hist.index[0]] = np.nan
 欄位名 `EMA_20`（含底線）直接用在圖例易被誤讀為 `SMA 20`。
 修法：`_ma_label(col)` helper → `col.replace("_", " ")` → `EMA 20` / `SMA 50`。
 當 `exit_ma_key == 'EMA_20'` 時，進場線與防守線同一條，合併標籤：`"EMA 20 (進場 ＆ 防守線)"`。
+
+### 11. AHR999 冪律公式錯誤（舊版膨脹至 $177 萬）
+
+根因：舊版用線性指數模型 `10^(2.68 + 0.00057×days)`，2026 年後估值嚴重膨脹。
+修法：改用 Giovanni Santostasi 冪律模型：
+
+```python
+# ✅ 正確
+estimated_price = 10 ** (-17.01467 + 5.84 * np.log10(days_since_genesis))
+# ❌ 舊版（勿用）
+estimated_price = 10 ** (2.68 + 0.00057 * days_since_genesis)
+```
+
+### 12. Walk-Forward 雙重移位 Bug
+
+根因：`bull_trend = close > sma200` 用了 `close_shifted`（前一日收盤），整體再 `shift(1)` → 實際用到 2 天前的資料。
+修法：所有條件統一使用**當日值**，最後**一次性** `shift(1)`。
+
+```python
+# ✅ 正確：統一用當日值，最後一次 shift
+bull_trend = close_vals > sma200_vals       # 當日
+is_entry   = bull_trend & rsi_bull & ...
+entry_mask = pd.Series(is_entry).shift(1).fillna(False).values  # 一次移位
+
+# ❌ 錯誤：中途用 shift，再統一 shift → 雙重移位
+bull_trend = close_shifted > sma200_vals    # 前日收盤
+is_entry   = bull_trend & ...
+entry_mask = is_entry.shift(1)              # 已是 2 天前資料
+```
+
+### 13. Walk-Forward 進場乖離硬編碼 1.5% 上限
+
+根因：`dist_pct <= 1.5` 硬編碼造成極少進場（ROI -22% vs swing +1654%），與 swing.py 行為不一致。
+修法：改為可選參數 `entry_dist_max_pct`（預設 `None` = 無上限）；UI 提供滑桿，設為 0 = 不限。
