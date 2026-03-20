@@ -14,7 +14,7 @@ import os
 import time             # [Task #3] 指數退避 sleep
 import sqlite3          # [Task #4] SQLite 資料庫連線
 import threading        # [Task #4] 寫入鎖，防止多執行緒同時寫入
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from dotenv import load_dotenv  # [Task #8] 從 .env 讀取環境變數
 
@@ -106,6 +106,9 @@ def _df_to_sqlite(df: pd.DataFrame, table_name: str) -> None:
             df_to_save.to_sql(table_name, conn, if_exists='replace', index=False)
 
 
+_VALID_TABLES = frozenset({'tvl_history', 'stablecoin_history', 'funding_history', 'btc_history'})
+
+
 def _df_from_sqlite(table_name: str, index_col: str = 'date') -> pd.DataFrame:
     """
     從 SQLite 表格讀取 DataFrame。
@@ -113,6 +116,8 @@ def _df_from_sqlite(table_name: str, index_col: str = 'date') -> pd.DataFrame:
     - index_col 預設為 'date'，讀取後自動轉為 DatetimeIndex
     - 欄位名稱統一轉小寫，相容 yfinance 存入的 'Date'（大寫）
     """
+    if table_name not in _VALID_TABLES:
+        raise ValueError(f"[SQLite] 不允許的表格名稱: {table_name!r}，允許清單: {_VALID_TABLES}")
     try:
         with _get_db_connection() as conn:
             # 確認表格是否存在，避免 SQL 錯誤
@@ -200,8 +205,8 @@ def update_stablecoin_history() -> pd.DataFrame:
                 if mcap <= 1000:
                     continue
 
-                # 使用 UTC 時間避免本地時區問題
-                dt_obj = datetime.utcfromtimestamp(ts)
+                # 使用 UTC 時間避免本地時區問題（utcfromtimestamp 已棄用）
+                dt_obj = datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
                 processed.append({'date': dt_obj, 'mcap': mcap})
 
             if not processed:

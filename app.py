@@ -15,6 +15,7 @@ v2.0 重構:
   - 各 Tab 專屬參數移至對應 Tab 內部設定
 """
 import math
+import pandas as pd
 import streamlit as st
 from datetime import datetime
 
@@ -168,7 +169,7 @@ with st.spinner("正在連線至戰情室數據庫..."):
     try:
         btc, dxy = fetch_market_data()
     except Exception as e:
-        btc, dxy = __import__('pandas').DataFrame(), __import__('pandas').DataFrame()
+        btc, dxy = pd.DataFrame(), pd.DataFrame()
         _data_warnings.append(f"市場數據載入異常: {e}")
 
     if btc.empty:
