@@ -38,71 +38,55 @@ _RISK_FREE_CACHE_TTL   = 3600  # 快取有效期（秒）
 _RISK_FREE_FALLBACK    = 0.04  # 最終 fallback: 4%
 
 
-def _fetch_aave_usdt_rate() -> float | None:
+def _fetch_defi_risk_free_rate() -> float | None:
     """
-    從 DeFiLlama 抓取 Aave V3 (Ethereum) 的 USDT 供應利率（APY）作為無風險利率基準。
+    單次請求 DeFiLlama pools API，依序搜尋：
+      1. Aave V3 (Ethereum) USDT 供應利率（首選）
+      2. MakerDAO DSR / sDAI（備援）
 
-    DeFiLlama pools endpoint 回傳所有 DeFi 協議的 pool 數據，
-    我們篩選 Aave V3 (Ethereum) 的 USDT 供應池，取 apyBase（基礎利率，不含獎勵）。
-
-    [Task #1] verify=False 繞過企業 SSL
-    """
-    try:
-        resp = requests.get(
-            "https://yields.llama.fi/pools",
-            timeout=8,
-            verify=SSL_VERIFY,  # [Task #1] 動態 SSL：本地 False / 雲端 True
-        )
-        if resp.status_code != 200:
-            return None
-
-        pools = resp.json().get('data', [])
-        for pool in pools:
-            # 篩選條件：Aave V3、Ethereum 主網、USDT 供應池
-            if (pool.get('project') == 'aave-v3'
-                    and pool.get('chain') == 'Ethereum'
-                    and pool.get('symbol') == 'USDT'):
-                apy_base = pool.get('apyBase')  # 年化基礎利率（百分比）
-                if apy_base is not None and apy_base > 0:
-                    # DeFiLlama 的 apyBase 以百分比表示（如 5.2 代表 5.2%）
-                    # Black-Scholes 需要小數形式（0.052）
-                    rate = float(apy_base) / 100.0
-                    print(f"[DynRate] Aave V3 USDT APY: {apy_base:.2f}%")
-                    return rate
-    except Exception as e:
-        print(f"[DynRate] Aave 利率抓取失敗: {e}")
-    return None
-
-
-def _fetch_makerdao_dsr() -> float | None:
-    """
-    備援：從 DeFiLlama 抓取 MakerDAO DSR (DAI Savings Rate) 作為無風險利率。
-    MakerDAO DSR 是 DeFi 世界公認的基準無風險利率之一。
-
-    [Task #1] verify=False 繞過企業 SSL
+    合併為單次請求避免重複下載同一份大型 JSON（原為兩次獨立請求）。
     """
     try:
         resp = requests.get(
             "https://yields.llama.fi/pools",
             timeout=8,
-            verify=SSL_VERIFY,  # [Task #1] 動態 SSL：本地 False / 雲端 True
+            verify=SSL_VERIFY,
         )
         if resp.status_code != 200:
             return None
 
         pools = resp.json().get('data', [])
+        aave_rate = None
+        maker_rate = None
+
         for pool in pools:
-            # MakerDAO DSR 池
-            if (pool.get('project') == 'makerdao'
-                    and pool.get('symbol') in ('DAI', 'sDAI')
-                    and pool.get('chain') == 'Ethereum'):
-                apy_base = pool.get('apyBase')
-                if apy_base is not None and apy_base > 0:
-                    rate = float(apy_base) / 100.0
-                    print(f"[DynRate] MakerDAO DSR: {apy_base:.2f}%")
-                    return rate
+            project = pool.get('project')
+            chain   = pool.get('chain')
+            symbol  = pool.get('symbol')
+            apy_base = pool.get('apyBase')
+
+            if (aave_rate is None
+                    and project == 'aave-v3'
+                    and chain == 'Ethereum'
+                    and symbol == 'USDT'
+                    and apy_base is not None and apy_base > 0):
+                aave_rate = float(apy_base) / 100.0
+                print(f"[DynRate] Aave V3 USDT APY: {apy_base:.2f}%")
+
+            if (maker_rate is None
+                    and project == 'makerdao'
+                    and chain == 'Ethereum'
+                    and symbol in ('DAI', 'sDAI')
+                    and apy_base is not None and apy_base > 0):
+                maker_rate = float(apy_base) / 100.0
+                print(f"[DynRate] MakerDAO DSR: {apy_base:.2f}%")
+
+            if aave_rate is not None and maker_rate is not None:
+                break  # 兩者都找到，提前結束迴圈
+
+        return aave_rate or maker_rate
     except Exception as e:
-        print(f"[DynRate] MakerDAO DSR 抓取失敗: {e}")
+        print(f"[DynRate] DeFiLlama 利率抓取失敗: {e}")
     return None
 
 
@@ -127,8 +111,8 @@ def get_dynamic_risk_free_rate() -> float:
             and now - _risk_free_rate_cache["ts"] < _RISK_FREE_CACHE_TTL):
         return _risk_free_rate_cache["rate"]
 
-    # 嘗試依序抓取
-    rate = _fetch_aave_usdt_rate() or _fetch_makerdao_dsr()
+    # 單次請求同時搜尋 Aave V3 USDT 和 MakerDAO DSR
+    rate = _fetch_defi_risk_free_rate()
 
     # 驗證合理性：DeFi 利率通常在 0.5% ~ 20% 之間，超出範圍視為異常數據
     if rate is not None and 0.005 <= rate <= 0.20:

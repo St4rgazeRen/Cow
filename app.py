@@ -15,6 +15,7 @@ v2.0 重構:
   - 各 Tab 專屬參數移至對應 Tab 內部設定
 """
 import math
+import time
 import pandas as pd
 import streamlit as st
 from datetime import datetime
@@ -56,14 +57,19 @@ def render_realtime_overview(
     """即時大盤速覽：BTC 價格、恐懼貪婪、資金費率、TVL、AHR999、穩定幣市值
     只接收純量參數，避免大型 DataFrame 序列化導致 fragment 重跑失敗。
     """
-    try:
-        rt = fetch_realtime_data()
-    except Exception:
-        rt = {k: None for k in [
-            'price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield',
-            'fng_value', 'fng_class',
-            'open_interest', 'open_interest_usd', 'oi_change_pct',
-        ]}
+    # 若主流程已在 30 秒內抓取過，直接重用快取，避免重複打 API
+    _rt_cache = st.session_state.get('_rt_cache', {})
+    if _rt_cache and (time.time() - _rt_cache.get('ts', 0)) < 30:
+        rt = _rt_cache['data']
+    else:
+        try:
+            rt = fetch_realtime_data()
+        except Exception:
+            rt = {k: None for k in [
+                'price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield',
+                'fng_value', 'fng_class',
+                'open_interest', 'open_interest_usd', 'oi_change_pct',
+            ]}
 
     _rt_price = rt.get('price')
     current_price = _rt_price or fallback_price
@@ -196,6 +202,8 @@ with st.spinner("正在連線至戰情室數據庫..."):
     # 即時數據（非致命）
     try:
         realtime_data = fetch_realtime_data()
+        # 存入 session_state 快取，供 fragment 首次觸發時重用（TTL 30s）
+        st.session_state['_rt_cache'] = {'data': realtime_data, 'ts': time.time()}
     except Exception as e:
         realtime_data = {k: None for k in [
             'price', 'funding_rate', 'tvl', 'stablecoin_mcap', 'defi_yield',
