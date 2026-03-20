@@ -11,17 +11,16 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# ==============================================================================
-# 環境設定：本地開發環境才關閉 SSL 驗證警告
-# GitHub Actions 為標準雲端環境，不需清空 CA Bundle
-# ==============================================================================
-_is_cloud = os.environ.get('IS_STREAMLIT_CLOUD', '').lower() == 'true'
-if not _is_cloud:
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 sys.path.append(_REPO_ROOT)
+
+# ==============================================================================
+# 環境設定：與 config.py 共用 SSL_VERIFY 旗標，避免重複推導邏輯
+# ==============================================================================
+from config import SSL_VERIFY
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from service.realtime import fetch_realtime_data
 from service.market_data import fetch_market_data
