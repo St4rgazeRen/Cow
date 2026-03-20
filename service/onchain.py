@@ -221,14 +221,16 @@ def _fetch_funding_rate_history() -> pd.DataFrame:
     """
     try:
         return asyncio.run(_fetch_funding_rate_async())
-    except RuntimeError:
+    except RuntimeError as e:
+        if "cannot be called from a running event loop" not in str(e):
+            raise
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, _fetch_funding_rate_async())
             try:
                 return future.result(timeout=60)
-            except Exception as e:
-                print(f"Async funding rate fallback error: {e}")
+            except Exception as exc:
+                print(f"Async funding rate fallback error: {exc}")
                 return pd.DataFrame()
 
 def _clean(df, name="data"):

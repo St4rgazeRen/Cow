@@ -90,11 +90,10 @@ def get_latest_local_price() -> float | None:
     for year in reversed(get_available_years()):
         db_path = os.path.join(DB_DIR, f"btcusdt_15m_{year}.db")
         try:
-            conn = sqlite3.connect(db_path)
-            row = conn.execute(
-                "SELECT close FROM klines ORDER BY open_time DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT close FROM klines ORDER BY open_time DESC LIMIT 1"
+                ).fetchone()
             if row:
                 return float(row[0])
         except Exception:
@@ -191,11 +190,10 @@ def get_coverage_info() -> dict:
         db_path = os.path.join(DB_DIR, f"btcusdt_15m_{year}.db")
         if not os.path.exists(db_path):
             continue
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT COUNT(*), MIN(open_time), MAX(open_time) FROM klines"
-        ).fetchone()
-        conn.close()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), MIN(open_time), MAX(open_time) FROM klines"
+            ).fetchone()
         if row and row[0]:
             total += row[0]
             if earliest_ms is None or row[1] < earliest_ms:
