@@ -12,12 +12,12 @@ import pandas as pd
 from datetime import datetime
 
 # ==============================================================================
-# 環境設定與安全限制覆寫 (強制關閉全域 SSL 驗證)
-# 因為公司網路或特定環境可能會有 SSL 憑證問題，統一關閉驗證
+# 環境設定：本地開發環境才關閉 SSL 驗證警告
+# GitHub Actions 為標準雲端環境，不需清空 CA Bundle
 # ==============================================================================
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-os.environ['CURL_CA_BUNDLE'] = ''
-os.environ['REQUESTS_CA_BUNDLE'] = ''
+_is_cloud = os.environ.get('IS_STREAMLIT_CLOUD', '').lower() == 'true'
+if not _is_cloud:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)

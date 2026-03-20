@@ -20,10 +20,6 @@ Antigravity v4 波段交易策略 & 回測引擎（五合一進場過濾）
   而非逐行掃描所有 2000+ 天
 - 理論加速：10-50x，取決於資料長度與交易次數
 """
-# 關閉 SSL 驗證警告，避免本地端公司網路環境報錯
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 import math
 import numpy as np
 import pandas as pd

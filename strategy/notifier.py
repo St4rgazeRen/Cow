@@ -27,12 +27,14 @@ import requests
 import urllib3
 from datetime import datetime
 from dotenv import load_dotenv
+from config import SSL_VERIFY
 
 # [Task #8] 從 .env 讀取憑證
 load_dotenv()
 
-# [Task #1] 關閉 SSL 警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 只在本地開發（SSL_VERIFY=False）時關閉警告
+if not SSL_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # LINE Messaging API 推播端點（點對點，需 User ID）
 _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -86,7 +88,7 @@ def _send(text: str) -> bool:
             json=payload,
             headers=headers,
             timeout=8,
-            verify=False,   # [Task #1] 企業 SSL 繞過
+            verify=SSL_VERIFY,
         )
         if resp.status_code == 200:
             # 推播成功，印出前 60 字作為日誌
@@ -97,7 +99,7 @@ def _send(text: str) -> bool:
             print(f"[Notifier] ❌ LINE 推播失敗 HTTP {resp.status_code}: {resp.text[:200]}")
             return False
     except requests.exceptions.Timeout:
-        print("[Notifier] ❌ LINE 推播逾時（5s），靜默跳過")
+        print("[Notifier] ❌ LINE 推播逾時（8s），靜默跳過")
         return False
     except Exception as e:
         print(f"[Notifier] ❌ LINE 推播例外: {e}")
