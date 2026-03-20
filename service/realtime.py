@@ -216,7 +216,8 @@ def fetch_realtime_data():
             )
             data['stablecoin_mcap'] = total / 1e9
 
-        data['defi_yield'] = 5.0 + random.uniform(-0.5, 0.5)
+        data['defi_yield'] = 5.0 + random.uniform(-0.5, 0.5)  # 模擬值（無公開即時 API）
+        data['defi_yield_is_mock'] = True
     except Exception as e:
         print(f"DeFiLlama error: {e}")
 

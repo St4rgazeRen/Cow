@@ -59,9 +59,6 @@ RSI_PERIOD: int = 14
 # 進場甜蜜點：收盤價高於 EMA20 的最小乖離百分比（防止在 EMA20 以下進場）
 ENTRY_DIST_MIN_PCT: float = 0.0   # 0%（貼近 EMA20）
 
-# 進場甜蜜點：收盤價高於 EMA20 的最大乖離百分比（超過此乖離視為追高）
-ENTRY_DIST_MAX_PCT: float = 1.5   # 1.5%
-
 # 趨勢過濾：RSI 需高於此值才視為多頭動能
 EXIT_RSI_MIN: int = 50
 

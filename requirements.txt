@@ -1,21 +1,17 @@
-streamlit
-pandas
-numpy
-pandas_ta
-pandas-ta
-plotly
-yfinance
-ccxt
-requests
-urllib3
+streamlit>=1.37.1
+pandas>=2.0.0
+numpy>=1.26.0,<2.0.0
+pandas-ta>=0.3.14b
+plotly>=5.24.0
+yfinance>=0.2.52
+ccxt>=4.0.0
+requests>=2.32.0
+urllib3>=2.0.0
 # [Task #2] 非同步 HTTP 客戶端，用於並行抓取資金費率分頁
-httpx
+httpx>=0.28.0
 # [Task #8] 環境變數管理，從 .env 讀取 API Key
-python-dotenv
+python-dotenv>=1.0.0
 # [Task #9] LINE Bot 推播通知
-line-bot-sdk
+line-bot-sdk>=3.0.0
 # [Task #10] 單元測試框架
-pytest
-
-
-
+pytest>=8.0.0
