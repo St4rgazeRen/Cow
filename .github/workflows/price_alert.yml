@@ -1,0 +1,53 @@
+name: Price Alert (1 BTC ROAD)
+
+on:
+  schedule:
+    # 每小時整點執行（UTC），涵蓋台灣時間全天
+    - cron: '0 * * * *'
+  # 允許手動觸發測試
+  workflow_dispatch:
+
+jobs:
+  check_price:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 下載上次執行留下的警報狀態（第一次執行時 artifact 不存在，continue-on-error 略過）
+      - name: Download alert state
+        uses: actions/download-artifact@v4
+        with:
+          name: alert-state
+          path: .
+        continue-on-error: true
+
+      - name: Run Price Alert
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          IS_STREAMLIT_CLOUD: "true"
+        run: |
+          python scripts/price_alert.py
+
+      # 無論是否觸發警報，都上傳最新狀態（保留 2 天）
+      - name: Upload alert state
+        uses: actions/upload-artifact@v4
+        with:
+          name: alert-state
+          path: alert_state.json
+          retention-days: 2
+        # alert_state.json 只在條件觸發時才會被建立/更新，若不存在則略過
+        continue-on-error: true
