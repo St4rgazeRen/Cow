@@ -158,3 +158,19 @@ entry_mask = is_entry.shift(1)              # 已是 2 天前資料
 
 根因：`dist_pct <= 1.5` 硬編碼造成極少進場（ROI -22% vs swing +1654%），與 swing.py 行為不一致。
 修法：改為可選參數 `entry_dist_max_pct`（預設 `None` = 無上限）；UI 提供滑桿，設為 0 = 不限。
+
+### 14. 派網 Bot API 不支援幣本位網格與馬丁格爾
+
+派網官方 Bot Open API（`/api/v1/bot/orders`）的 `buOrderTypes` 只有三種：
+`futures_grid`（U本位期貨網格）、`spot_grid`（現貨網格）、`smart_copy`（智能跟單）。
+
+**幣本位合約網格做多** 與 **馬丁格爾機器人** 均不在清單內，且 App 手動建立的機器人也不會出現在此 API 回傳結果。帳戶餘額 API 同樣不含機器人內的資產。
+
+→ 派網 API Key 對本專案目前無用，勿再嘗試讀取機器人狀態。
+
+### 15. GitHub Actions 用量：Cow 為公開 repo，不計入免費額度
+
+GitHub Actions 免費方案：私有 repo 2,000 分鐘/月，**公開 repo 無限制**。
+
+Cow 是公開 repo，`price_alert.yml`（每小時）與 `daily_line_notify.yml`（每天 2 次）均不消耗配額。
+目前唯一消耗私有配額的是 `Notion_auto`（約 150 分鐘/月），距上限 2,000 分鐘仍有大量餘裕。
