@@ -391,17 +391,20 @@ def forecast_price(current_price: float, df: pd.DataFrame = None, as_of: datetim
         # ═══ 熊市預測 ═══
         forecast_type = "bear_bottom"
 
-        # ▸ 優先使用當前週期已知 ATH（CYCLE_HISTORY）
-        # ▸ 其次使用 market_state 計算的 cycle_ath（從 df 取得）
-        # ▸ 最後才用 prev_ath
+        # ▸ 取「CYCLE_HISTORY 寫死值」與「df 實算 cycle_ath」兩者較大者
+        #   原本順序是先 CYCLE_HISTORY 再 df → 寫死值過時時會偏低（如本輪 2025-10-06
+        #   創高後，CYCLE_HISTORY 仍停在 2025-01-20 的 $108,268）。
+        # ▸ 兩者皆不顯著高於現價時，退回前一週期 ATH。
         cycle_ath_ms = market_state.get("cycle_ath", 0)
+        cycle_candidates = [v for v in (known_cycle_ath, cycle_ath_ms) if v]
+        best_cycle_ath = max(cycle_candidates) if cycle_candidates else 0
 
-        if known_cycle_ath and known_cycle_ath > current_price * 1.05:
-            ath_ref       = known_cycle_ath
-            ath_ref_label = f"當前週期已知 ATH ${known_cycle_ath:,.0f} (2025-01-20)"
-        elif cycle_ath_ms and cycle_ath_ms > current_price * 1.05:
-            ath_ref       = cycle_ath_ms
-            ath_ref_label = f"當前週期計算 ATH ${cycle_ath_ms:,.0f}"
+        if best_cycle_ath and best_cycle_ath > current_price * 1.05:
+            ath_ref = best_cycle_ath
+            if cycle_ath_ms and cycle_ath_ms >= (known_cycle_ath or 0):
+                ath_ref_label = f"當前週期實算 ATH ${cycle_ath_ms:,.0f}"
+            else:
+                ath_ref_label = f"當前週期已知 ATH ${known_cycle_ath:,.0f}"
         else:
             ath_ref       = prev_ath
             ath_ref_label = f"前一週期 ATH ${prev_ath:,.0f}（當前週期ATH尚不明確）"
