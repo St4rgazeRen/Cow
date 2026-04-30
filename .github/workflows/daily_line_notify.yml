@@ -7,6 +7,8 @@ on:
     - cron: '23 1 * * *'
     # 台灣時間下午 15:39 -> UTC 07:39
     - cron: '39 7 * * *'
+    # 台灣時間晚上 21:27 -> UTC 13:27
+    - cron: '27 13 * * *'
   # 允許在 GitHub Actions 頁面上手動觸發測試
   workflow_dispatch: 
 
