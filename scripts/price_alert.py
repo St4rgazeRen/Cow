@@ -2,8 +2,7 @@
 scripts/price_alert.py
 1 BTC ROAD 價格警報腳本（GitHub Actions 每小時觸發）
 
-監控兩個關鍵門檻：
-  - BTC >= $80,000 → 觸發事件一：幣本位機器人重組
+監控關鍵門檻：
   - BTC <= $58,000 → 觸發事件二：馬丁格爾轉換 + 補保證金
 
 防重複推播：使用 alert_state.json 記錄今日已推播的警報，
@@ -21,8 +20,8 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT  = os.path.dirname(_SCRIPT_DIR)
 sys.path.append(_REPO_ROOT)
 
-from config import SSL_VERIFY, ALERT_PRICE_HIGH, ALERT_PRICE_LOW
-from strategy.notifier import notify_80k_reorganize, notify_58k_defense
+from config import SSL_VERIFY, ALERT_PRICE_LOW
+from strategy.notifier import notify_58k_defense
 
 if not SSL_VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -38,7 +37,7 @@ def _load_state() -> dict:
                 return json.load(f)
         except Exception:
             pass
-    return {"last_80k_date": None, "last_58k_date": None}
+    return {"last_58k_date": None}
 
 
 def _save_state(state: dict) -> None:
@@ -77,18 +76,6 @@ def main() -> None:
     state   = _load_state()
     today   = str(date.today())
     changed = False
-
-    # ── 觸發事件一：$80,000 重組警報 ──────────────────────────────────────
-    if price >= ALERT_PRICE_HIGH:
-        if _should_alert(state.get("last_80k_date")):
-            print(f"🚀 觸發事件一：BTC ${price:,.0f} >= ${ALERT_PRICE_HIGH:,.0f}，發送重組警報")
-            notify_80k_reorganize(price)
-            state["last_80k_date"] = today
-            changed = True
-        else:
-            print(f"ℹ️  BTC ${price:,.0f} >= ${ALERT_PRICE_HIGH:,.0f}，今日已推播重組警報，略過。")
-    else:
-        print(f"✓ BTC ${price:,.0f} < ${ALERT_PRICE_HIGH:,.0f}，未觸及重組門檻。")
 
     # ── 觸發事件二：$58,000 防守警報 ──────────────────────────────────────
     if price <= ALERT_PRICE_LOW:

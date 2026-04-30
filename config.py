@@ -94,5 +94,4 @@ DUAL_INVEST_COOLDOWN_DAYS: int = 1
 DEFAULT_APY_THRESHOLD: float = 20.0  # 20%
 
 # 1 BTC ROAD 價格警報門檻（參見 1 BTC ROAD.md）
-ALERT_PRICE_HIGH: float = 80_000.0   # 觸及此價位 → 關閉 3 台幣本位機器人重組（觸發事件一）
-ALERT_PRICE_LOW: float  = 58_000.0   # 跌至此價位 → 關閉馬丁格爾補保證金（觸發事件二）
+ALERT_PRICE_LOW: float = 58_000.0   # 跌至此價位 → 關閉馬丁格爾補保證金（觸發事件二）

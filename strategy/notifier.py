@@ -241,29 +241,6 @@ def notify_bear_bottom_score(
     return _send(text)
 
 
-def notify_80k_reorganize(price: float) -> bool:
-    """
-    BTC 觸及 $80,000 推播 — 1 BTC ROAD 觸發事件一。
-
-    提醒關閉 3 台幣本位網格機器人並重組為單台大區間機器人。
-    """
-    text = (
-        f"🚀 BTC 觸及 $80,000！\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"💰 現價:  ${price:,.0f}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📋 待執行（觸發事件一）:\n"
-        f"1. 關閉 3 台幣本位網格機器人\n"
-        f"2. 收回全部 BTC\n"
-        f"3. 重開 1 台：$40,000~$80,000 / 2x / 500格等比\n"
-        f"4. 不補額外保證金（強評價 ≈ $53,333）\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🕐 時間: {_now_str()}\n"
-        f"⚠️ 完成操作後請至 GitHub Actions 停用 price_alert workflow"
-    )
-    return _send(text)
-
-
 def notify_58k_defense(price: float) -> bool:
     """
     BTC 跌至 $58,000 推播 — 1 BTC ROAD 觸發事件二。
