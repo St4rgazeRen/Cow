@@ -73,6 +73,13 @@ from core.indicators import calculate_technical_indicators, calculate_ahr999
 from core.bear_bottom import calculate_bear_bottom_indicators, calculate_market_cycle_score
 from core.season_forecast import forecast_price, STATS as _SEASON_STATS
 
+
+def _miner_cost_from_ths(hashrate_ths: float) -> float:
+    """將算力（TH/s）換算成礦工電費盈虧平衡價（USD/BTC）。"""
+    cost_per_day = hashrate_ths * MINER_EFFICIENCY_JTH / 1000 * 24 * ELECTRICITY_RATE
+    return cost_per_day / BTC_PER_DAY
+
+
 def fetch_floor_indicators(now: datetime, btc_df: pd.DataFrame) -> dict:
     """
     計算三項底部支撐參考指標（任一失敗均不影響其他）。
@@ -104,24 +111,21 @@ def fetch_floor_indicators(now: datetime, btc_df: pd.DataFrame) -> dict:
     try:
         resp = requests.get(
             "https://api.blockchain.info/stats",
-            timeout=10, verify=False,
+            timeout=10, verify=SSL_VERIFY,
         )
         resp.raise_for_status()
         hashrate_ghs = float(resp.json()["hash_rate"])  # GH/s
-        hashrate_ths = hashrate_ghs / 1000
-        cost_per_day = hashrate_ths * MINER_EFFICIENCY_JTH / 1000 * 24 * ELECTRICITY_RATE
-        result["miner_cost"] = cost_per_day / BTC_PER_DAY
+        result["miner_cost"] = _miner_cost_from_ths(hashrate_ghs / 1000)
     except Exception as e:
         print(f"[WARN] Miner cost (blockchain.info): {e}")
         try:
             resp = requests.get(
                 "https://mempool.space/api/v1/mining/hashrate/1d",
-                timeout=10, verify=False,
+                timeout=10, verify=SSL_VERIFY,
             )
             resp.raise_for_status()
             hashrate_ths = float(resp.json()["currentHashrate"]) / 1e12  # H/s → TH/s
-            cost_per_day = hashrate_ths * MINER_EFFICIENCY_JTH / 1000 * 24 * ELECTRICITY_RATE
-            result["miner_cost"] = cost_per_day / BTC_PER_DAY
+            result["miner_cost"] = _miner_cost_from_ths(hashrate_ths)
         except Exception as e2:
             print(f"[WARN] Miner cost (mempool.space): {e2}")
 
@@ -161,14 +165,10 @@ def get_decision_data():
 
     current_price = None
     try:
-        # [修改區塊]：改用 Coinbase 公開 API 獲取最新的 BTC/USD 即時價格
-        # 原因是 GitHub Actions 伺服器多在美國，使用 Binance API 會遭遇 451 Geo-block 錯誤
-        # Coinbase 對美國 IP 完全開放，且不需 API Key 即可抓取現貨價格
+        # Coinbase 公開 API：GitHub Actions 伺服器在美國，Binance 會 451 Geo-block
         url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
-        response = requests.get(url, verify=False, timeout=10)
+        response = requests.get(url, verify=SSL_VERIFY, timeout=10)
         response.raise_for_status()
-
-        # 解析 Coinbase 的 JSON 結構 (其價格放在 data 底下的 amount 欄位)
         current_price = float(response.json()['data']['amount'])
         print(f"✅ 成功透過 Coinbase API 抓取最新 BTC 價格: {current_price}")
 
@@ -560,7 +560,7 @@ def send_line_message(flex_payload):
     headers = { "Content-Type": "application/json", "Authorization": f"Bearer {line_token}" }
     data = { "to": line_user_id, "messages": [flex_payload] }
     try:
-        response = requests.post(url, headers=headers, json=data, verify=False, timeout=10)
+        response = requests.post(url, headers=headers, json=data, verify=SSL_VERIFY, timeout=10)
         response.raise_for_status()
         print("✅ LINE 速報發送成功！")
     except Exception as e:
