@@ -100,19 +100,30 @@ def fetch_floor_indicators(now: datetime, btc_df: pd.DataFrame) -> dict:
     except Exception as e:
         print(f"[WARN] 200w MA: {e}")
 
-    # ── 3. 礦工電費盈虧平衡價（blockchain.info）
+    # ── 3. 礦工電費盈虧平衡價（blockchain.info stats → mempool.space 備援）
     try:
         resp = requests.get(
-            "https://blockchain.info/q/hashrate",
+            "https://api.blockchain.info/stats",
             timeout=10, verify=False,
         )
         resp.raise_for_status()
-        hashrate_ghs = float(resp.text.strip())
+        hashrate_ghs = float(resp.json()["hash_rate"])  # GH/s
         hashrate_ths = hashrate_ghs / 1000
         cost_per_day = hashrate_ths * MINER_EFFICIENCY_JTH / 1000 * 24 * ELECTRICITY_RATE
         result["miner_cost"] = cost_per_day / BTC_PER_DAY
     except Exception as e:
-        print(f"[WARN] Miner cost: {e}")
+        print(f"[WARN] Miner cost (blockchain.info): {e}")
+        try:
+            resp = requests.get(
+                "https://mempool.space/api/v1/mining/hashrate/1d",
+                timeout=10, verify=False,
+            )
+            resp.raise_for_status()
+            hashrate_ths = float(resp.json()["currentHashrate"]) / 1e12  # H/s → TH/s
+            cost_per_day = hashrate_ths * MINER_EFFICIENCY_JTH / 1000 * 24 * ELECTRICITY_RATE
+            result["miner_cost"] = cost_per_day / BTC_PER_DAY
+        except Exception as e2:
+            print(f"[WARN] Miner cost (mempool.space): {e2}")
 
     return result
 
